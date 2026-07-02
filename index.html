@@ -14,11 +14,11 @@
 <main class="app-shell">
   <header class="topbar">
     <div>
-      <p class="eyebrow">本地 OCR · 印刷编号锚点版</p>
+      <p class="eyebrow">本地 OCR · 多区域锚点版</p>
       <h1>TrainSheet AI</h1>
-      <p class="sub">先找连续的 31～61，再锁定目标表格</p>
+      <p class="sub">多区域扫描印刷编号，找到连续 31～61</p>
     </div>
-    <div class="badge">V0.9.1</div>
+    <div class="badge">V0.9.2</div>
   </header>
 
   <section class="hero-card">
@@ -82,7 +82,7 @@
 
   <section id="fallbackPanel" class="panel hidden">
     <h2>自动定位未通过</h2>
-    <p class="hint">程序没有找到足够可靠的连续编号。它不会乱框，请换一张更清晰的照片，或者等待下一版加入手动点选 31 与 61 的备用方式。</p>
+    <p class="hint">程序没有找到足够可靠的连续编号。它不会乱框。V0.9.2 已尝试多区域、多阈值 OCR；如果仍失败，请把调试信息截图发给我。</p>
   </section>
 
   <section id="debugPanel" class="panel hidden">
@@ -90,7 +90,7 @@
     <pre id="debugText" class="debug-box"></pre>
   </section>
 
-  <footer class="footer"><span>TrainSheet AI · V0.9.1</span></footer>
+  <footer class="footer"><span>TrainSheet AI · V0.9.2</span></footer>
 </main>
 <script src="tesseract.min.js"></script>
 <script src="app.js"></script>
