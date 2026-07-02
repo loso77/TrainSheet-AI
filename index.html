@@ -13,16 +13,16 @@
 <main class="app-shell">
   <header class="topbar">
     <div>
-      <p class="eyebrow">本地运行 · 表格线检测版</p>
+      <p class="eyebrow">本地运行 · 网格分析版</p>
       <h1>TrainSheet AI</h1>
       <p class="sub">手写车号识别助手</p>
     </div>
-    <div class="badge">V0.7</div>
+    <div class="badge">V0.8</div>
   </header>
 
   <section class="hero-card">
-    <div class="metric"><span id="lineCount" class="metric-number">0</span><span class="metric-label">检测线条</span></div>
-    <div class="metric"><span id="gridCount" class="metric-number">0</span><span class="metric-label">网格候选</span></div>
+    <div class="metric"><span id="lineCount" class="metric-number">0</span><span class="metric-label">线条</span></div>
+    <div class="metric"><span id="gridScore" class="metric-number">0</span><span class="metric-label">网格分</span></div>
   </section>
 
   <section class="action-grid">
@@ -38,44 +38,49 @@
 
   <section id="previewCard" class="panel hidden">
     <div class="panel-title-row">
-      <h2>原图 + 线条检测</h2>
+      <h2>原图网格分析</h2>
       <button id="clearBtn" class="ghost-btn">清除</button>
     </div>
     <div class="image-stage">
       <img id="previewImage" class="preview-image" alt="照片预览">
       <canvas id="overlayCanvas" class="overlay-canvas"></canvas>
     </div>
-    <p class="hint">蓝线=检测到的横线，绿线=检测到的竖线，橙框=程序推测的右侧目标区域。</p>
+    <p class="hint">蓝线=横线候选，绿线=竖线候选，橙框=评分最高的右侧网格。</p>
   </section>
 
   <section class="panel">
     <div class="panel-title-row"><h2>处理流程</h2><span id="workflowState" class="state-pill">等待照片</span></div>
     <div class="steps">
       <div class="step" data-step="photo"><span>1</span><p>读取照片</p></div>
-      <div class="step" data-step="gray"><span>2</span><p>转灰度/二值化</p></div>
-      <div class="step" data-step="lines"><span>3</span><p>检测表格线</p></div>
-      <div class="step" data-step="target"><span>4</span><p>寻找右侧网格</p></div>
-      <div class="step" data-step="crop"><span>5</span><p>裁出目标区域</p></div>
+      <div class="step" data-step="lines"><span>2</span><p>检测线条</p></div>
+      <div class="step" data-step="cluster"><span>3</span><p>横线聚类</p></div>
+      <div class="step" data-step="score"><span>4</span><p>网格评分</p></div>
+      <div class="step" data-step="crop"><span>5</span><p>裁切候选区</p></div>
     </div>
-    <button id="startBtn" class="big-btn" disabled>开始检测表格线</button>
+    <button id="startBtn" class="big-btn" disabled>开始网格分析</button>
     <p id="statusText" class="status">请先拍照或从相册选择一张完整图片。</p>
   </section>
 
   <section id="targetPanel" class="panel hidden">
     <div class="panel-title-row">
-      <h2>目标区域裁切</h2>
+      <h2>右侧目标区候选</h2>
       <span id="targetScore" class="state-pill orange">请检查</span>
     </div>
     <canvas id="targetCanvas" class="result-canvas"></canvas>
-    <p class="hint">这版是真正从照片里找横线/竖线。若橙框不准，下一版继续优化线条分组和透视校正。</p>
+    <p class="hint">这一版会按“横线等距 + 竖线数量 + 右侧位置”给区域打分。</p>
   </section>
 
   <section id="rowPanel" class="panel hidden">
-    <div class="panel-title-row"><h2>31 行切分预览</h2><span class="state-pill blue">定位测试</span></div>
+    <div class="panel-title-row"><h2>31 行切分预览</h2><span class="state-pill blue">网格预览</span></div>
     <canvas id="rowCanvas" class="result-canvas"></canvas>
   </section>
 
-  <footer class="footer"><span>TrainSheet AI · V0.7.0</span></footer>
+  <section id="debugPanel" class="panel hidden">
+    <div class="panel-title-row"><h2>调试信息</h2><span class="state-pill">Debug</span></div>
+    <pre id="debugText" class="debug-box"></pre>
+  </section>
+
+  <footer class="footer"><span>TrainSheet AI · V0.8.0</span></footer>
 </main>
 <script src="app.js"></script>
 </body>
