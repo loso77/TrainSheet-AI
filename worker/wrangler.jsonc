@@ -1,0 +1,62 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trainsheet-ai-secure",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-06-01",
+
+  "vars": {
+    "ALLOWED_ORIGIN": "https://loso77.github.io",
+    "OPENAI_API_URL": "https://api.openai.com/v1/chat/completions",
+    "OPENAI_MODEL": "gpt-4.1-mini",
+    "TOKEN_VERSION": "1",
+    "TOKEN_TTL_DAYS": "30",
+    "DEVICE_DAILY_LIMIT": "30",
+    "GLOBAL_DAILY_LIMIT": "50",
+    "MAX_REQUEST_BYTES": "9000000"
+  },
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "USAGE_GATE",
+        "class_name": "UsageGate"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": [
+        "UsageGate"
+      ]
+    }
+  ],
+
+  "ratelimits": [
+    {
+      "name": "AUTH_RATE",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 5,
+        "period": 60
+      }
+    },
+    {
+      "name": "RECOGNIZE_IP_RATE",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 4,
+        "period": 60
+      }
+    },
+    {
+      "name": "RECOGNIZE_DEVICE_RATE",
+      "namespace_id": "1003",
+      "simple": {
+        "limit": 3,
+        "period": 60
+      }
+    }
+  ]
+}
