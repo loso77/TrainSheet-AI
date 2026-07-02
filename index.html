@@ -1,84 +1,80 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="theme-color" content="#f5f7fb">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#2563eb">
   <title>TrainSheet AI</title>
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main class="app-shell">
-  <header class="topbar">
-    <div>
-      <p class="eyebrow">人工四角定位 · 可靠备用方案</p>
-      <h1>TrainSheet AI</h1>
-      <p class="sub">手写车号识别助手</p>
-    </div>
-    <div class="badge">V0.9.5</div>
+<main class="app">
+  <header class="hero">
+    <div class="logo">🚇</div>
+    <div class="grow"><h1>TrainSheet AI</h1><p>个人安全版 · 股道31—61</p></div>
+    <button id="settingsBtn" class="icon" aria-label="设置">⚙️</button>
   </header>
 
-  <section class="action-grid">
-    <label class="action-card primary">
-      <span class="action-icon">📷</span><span class="action-title">拍照</span><span class="action-desc">调用 iPhone 相机</span>
-      <input id="cameraInput" type="file" accept="image/*" capture="environment">
+  <section id="settingsPanel" class="card hidden">
+    <div class="section-head"><h2>连接设置</h2><button id="closeSettings" class="link-btn">收起</button></div>
+    <label class="field"><span>Worker 地址</span><input id="workerUrl" type="url" placeholder="https://你的项目.workers.dev"></label>
+    <button id="saveWorker" class="secondary">保存并检测</button>
+    <div id="connectionState" class="hint">尚未检测。</div>
+    <div class="divider"></div>
+    <button id="logoutBtn" class="danger-outline">撤销本机授权</button>
+    <p class="hint">网页中不保存大模型 API Key，也不保存设备授权码。</p>
+  </section>
+
+  <section id="authCard" class="card">
+    <h2>设备授权</h2>
+    <p class="muted">首次使用时输入你在 Worker 中设置的设备授权码。验证成功后，本机只保存可撤销令牌。</p>
+    <label class="field"><span>设备授权码</span><input id="accessCode" type="password" autocomplete="one-time-code" placeholder="输入授权码"></label>
+    <button id="authorizeBtn" class="primary">授权这台设备</button>
+    <p id="authStatus" class="status"></p>
+  </section>
+
+  <section id="mainCard" class="card hidden">
+    <label class="upload">
+      📷 选择或拍摄车表
+      <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp" capture="environment">
     </label>
-    <label class="action-card">
-      <span class="action-icon">🖼️</span><span class="action-title">相册</span><span class="action-desc">选择已有照片</span>
-      <input id="galleryInput" type="file" accept="image/*">
-    </label>
+
+    <div id="previewWrap" class="preview-wrap hidden">
+      <img id="preview" alt="车表照片">
+      <button id="removeImage" class="remove" aria-label="移除">×</button>
+    </div>
+
+    <details class="notes">
+      <summary>补充说明（可选）</summary>
+      <textarea id="extraNote" maxlength="300" rows="3" placeholder="例如：照片右下角有反光"></textarea>
+    </details>
+
+    <button id="recognizeBtn" class="primary" disabled>开始识别</button>
+    <div id="progress" class="progress hidden"><div></div></div>
+    <p id="status" class="status">请选择照片。</p>
+    <p id="quota" class="hint"></p>
   </section>
 
-  <section id="selectPanel" class="panel hidden">
-    <div class="panel-title-row">
-      <h2>点选四个角</h2>
-      <button id="resetPointsBtn" class="ghost-btn">重选</button>
+  <section id="resultCard" class="card hidden">
+    <div class="section-head">
+      <div><h2>识别结果</h2><p id="summary" class="hint"></p></div>
+      <button id="clearResult" class="link-btn">清空</button>
     </div>
-    <p id="pointHint" class="status strong">请点击目标表格的左上角。</p>
-    <div class="canvas-wrap">
-      <canvas id="selectCanvas" class="select-canvas"></canvas>
+    <div class="legend"><span>🟨 需确认</span><span>🟩 较确定</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>股道</th><th>时间</th><th>车号</th><th>备注</th></tr></thead>
+        <tbody id="resultBody"></tbody>
+      </table>
     </div>
-    <div class="point-legend">
-      <span>1 左上</span><span>2 右上</span><span>3 右下</span><span>4 左下</span>
+    <div class="actions">
+      <button id="copyBtn" class="secondary">复制表格</button>
+      <button id="csvBtn" class="secondary">导出 CSV</button>
     </div>
-    <button id="warpBtn" class="big-btn" disabled>拉正并生成 31 行</button>
   </section>
 
-  <section id="resultPanel" class="panel hidden">
-    <div class="panel-title-row">
-      <h2>拉正后的目标区</h2>
-      <span class="state-pill blue">31 → 61</span>
-    </div>
-    <canvas id="warpedCanvas" class="result-canvas"></canvas>
-    <p class="hint">左侧橙色编号由程序自动生成，第1行对应31，最后一行对应61。</p>
-  </section>
-
-  <section id="rowsPanel" class="panel hidden">
-    <div class="panel-title-row">
-      <h2>逐行预览</h2>
-      <span id="rowLabel" class="state-pill orange">31</span>
-    </div>
-    <canvas id="rowCanvas" class="result-canvas row-preview"></canvas>
-    <div class="row-actions">
-      <button id="prevRowBtn" class="secondary-btn">上一行</button>
-      <button id="nextRowBtn" class="secondary-btn">下一行</button>
-    </div>
-    <p class="hint">这一版先确认四角点选和逐行切分是否准确，下一版再接入车号与股道识别。</p>
-  </section>
-
-  <section class="panel">
-    <h2>操作说明</h2>
-    <ol class="instructions">
-      <li>上传完整照片。</li>
-      <li>按顺序点击目标表格四个角：左上、右上、右下、左下。</li>
-      <li>点击“拉正并生成31行”。</li>
-      <li>检查第31行到第61行是否切分正确。</li>
-    </ol>
-  </section>
-
-  <footer class="footer"><span>TrainSheet AI · V0.9.5</span></footer>
+  <footer>V2.0.0 · 图片不在本站落盘保存</footer>
 </main>
 <script src="app.js"></script>
 </body>

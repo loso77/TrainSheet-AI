@@ -1,188 +1,48 @@
-/* TrainSheet AI Version: 0.9.5 */
-const cameraInput=document.getElementById("cameraInput"),galleryInput=document.getElementById("galleryInput"),selectPanel=document.getElementById("selectPanel"),selectCanvas=document.getElementById("selectCanvas"),resetPointsBtn=document.getElementById("resetPointsBtn"),pointHint=document.getElementById("pointHint"),warpBtn=document.getElementById("warpBtn"),resultPanel=document.getElementById("resultPanel"),warpedCanvas=document.getElementById("warpedCanvas"),rowsPanel=document.getElementById("rowsPanel"),rowCanvas=document.getElementById("rowCanvas"),rowLabel=document.getElementById("rowLabel"),prevRowBtn=document.getElementById("prevRowBtn"),nextRowBtn=document.getElementById("nextRowBtn");
-let image=null,imageUrl=null,points=[],displayScale=1,currentRow=0,warpedImageData=null;
+const $=id=>document.getElementById(id);
+const E={settingsBtn:$("settingsBtn"),settingsPanel:$("settingsPanel"),closeSettings:$("closeSettings"),workerUrl:$("workerUrl"),saveWorker:$("saveWorker"),connectionState:$("connectionState"),logoutBtn:$("logoutBtn"),authCard:$("authCard"),accessCode:$("accessCode"),authorizeBtn:$("authorizeBtn"),authStatus:$("authStatus"),mainCard:$("mainCard"),imageInput:$("imageInput"),preview:$("preview"),previewWrap:$("previewWrap"),removeImage:$("removeImage"),extraNote:$("extraNote"),recognizeBtn:$("recognizeBtn"),progress:$("progress"),status:$("status"),quota:$("quota"),resultCard:$("resultCard"),summary:$("summary"),resultBody:$("resultBody"),clearResult:$("clearResult"),copyBtn:$("copyBtn"),csvBtn:$("csvBtn")};
+let file=null,rows=[];
+const tracks=Array.from({length:31},(_,i)=>31+i);
+const state={get base(){return (localStorage.getItem("ts_worker")||"").replace(/\/+$/,"")},get token(){return localStorage.getItem("ts_token")||""},setToken(v){v?localStorage.setItem("ts_token",v):localStorage.removeItem("ts_token")}};
 
-function handleFile(file){
-  if(!file)return;
-  if(imageUrl)URL.revokeObjectURL(imageUrl);
-  imageUrl=URL.createObjectURL(file);
-  const img=new Image();
-  img.onload=()=>{
-    image=img;
-    setupCanvas();
-    resetPoints();
-    selectPanel.classList.remove("hidden");
-    resultPanel.classList.add("hidden");
-    rowsPanel.classList.add("hidden");
-    selectPanel.scrollIntoView({behavior:"smooth",block:"start"});
-  };
-  img.src=imageUrl;
+function status(el,msg,type=""){el.textContent=msg;el.className=`status ${type}`.trim()}
+function authUI(ok){E.authCard.classList.toggle("hidden",ok);E.mainCard.classList.toggle("hidden",!ok)}
+function headers(auth=true){const h={"Content-Type":"application/json"};if(auth&&state.token)h.Authorization=`Bearer ${state.token}`;return h}
+async function api(path,options={}){if(!state.base)throw new Error("请先填写 Worker 地址");const r=await fetch(state.base+path,options);let d={};try{d=await r.json()}catch{}if(!r.ok){const e=new Error(d.error||`请求失败：${r.status}`);e.status=r.status;throw e}return d}
+async function check(){
+ if(!state.base){E.connectionState.textContent="请填写 Worker 地址。";authUI(false);return}
+ try{const d=await api("/health",{headers:headers(false)});E.connectionState.textContent=d.ok?"Worker 连接正常。":"Worker 尚未配置完整。";
+   if(state.token){try{const me=await api("/me",{headers:headers()});authUI(true);showQuota(me)}catch(e){if(e.status===401)state.setToken("");authUI(false)}}
+ }catch(e){E.connectionState.textContent="连接失败："+e.message;authUI(false)}
 }
-cameraInput.addEventListener("change",()=>handleFile(cameraInput.files[0]));
-galleryInput.addEventListener("change",()=>handleFile(galleryInput.files[0]));
-
-function setupCanvas(){
-  const maxWidth=1200;
-  displayScale=Math.min(1,maxWidth/image.naturalWidth);
-  selectCanvas.width=Math.round(image.naturalWidth*displayScale);
-  selectCanvas.height=Math.round(image.naturalHeight*displayScale);
-  drawSelection();
+function showQuota(d){if(!d)return;E.quota.textContent=`今日本设备 ${d.device_used}/${d.device_limit} 次；服务总计 ${d.global_used}/${d.global_limit} 次。令牌有效至 ${new Date(d.expires_at*1000).toLocaleDateString()}。`}
+async function authorize(){
+ const code=E.accessCode.value.trim();if(!code)return status(E.authStatus,"请输入设备授权码。","error");
+ E.authorizeBtn.disabled=true;status(E.authStatus,"正在验证……");
+ try{const d=await api("/auth",{method:"POST",headers:headers(false),body:JSON.stringify({code,device_name:navigator.userAgent.slice(0,120)})});state.setToken(d.token);E.accessCode.value="";authUI(true);showQuota(d);status(E.status,"设备已授权，请选择照片。","success")}
+ catch(e){status(E.authStatus,e.message,"error")}finally{E.authorizeBtn.disabled=false}
 }
-function drawSelection(){
-  const ctx=selectCanvas.getContext("2d");
-  ctx.clearRect(0,0,selectCanvas.width,selectCanvas.height);
-  if(image)ctx.drawImage(image,0,0,selectCanvas.width,selectCanvas.height);
-  if(points.length){
-    ctx.save();
-    ctx.strokeStyle="#f59e0b";
-    ctx.lineWidth=4;
-    ctx.setLineDash([10,6]);
-    ctx.beginPath();
-    ctx.moveTo(points[0].x,points[0].y);
-    for(let i=1;i<points.length;i++)ctx.lineTo(points[i].x,points[i].y);
-    if(points.length===4)ctx.closePath();
-    ctx.stroke();
-    ctx.restore();
-  }
-  points.forEach((p,i)=>{
-    ctx.beginPath();
-    ctx.fillStyle=["#2563eb","#16a34a","#dc2626","#f59e0b"][i];
-    ctx.arc(p.x,p.y,12,0,Math.PI*2);
-    ctx.fill();
-    ctx.fillStyle="#fff";
-    ctx.font="bold 14px -apple-system";
-    ctx.textAlign="center";
-    ctx.textBaseline="middle";
-    ctx.fillText(String(i+1),p.x,p.y);
-  });
+function resetImage(){file=null;E.imageInput.value="";E.preview.src="";E.previewWrap.classList.add("hidden");E.recognizeBtn.disabled=true;status(E.status,"请选择照片。")}
+function compress(file,max=1900,quality=.86){return new Promise((res,rej)=>{const img=new Image(),u=URL.createObjectURL(file);img.onload=()=>{let w=img.width,h=img.height,s=Math.min(1,max/Math.max(w,h));w=Math.round(w*s);h=Math.round(h*s);const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);URL.revokeObjectURL(u);res(c.toDataURL("image/jpeg",quality))};img.onerror=()=>{URL.revokeObjectURL(u);rej(new Error("照片读取失败"))};img.src=u})}
+function norm(input){const m=new Map;(Array.isArray(input)?input:[]).forEach(x=>{const t=Number(x.track);if(!tracks.includes(t)||m.has(t))return;m.set(t,{track:t,time:String(x.time??"").trim(),train_number:String(x.train_number??"").trim(),note:String(x.note??"").trim(),confidence:Math.max(0,Math.min(1,Number(x.confidence)||0))})});return tracks.map(t=>m.get(t)||{track:t,time:"",train_number:"",note:"模型未返回该股道",confidence:0})}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+function render(){E.resultBody.innerHTML="";let n=0;rows.forEach((r,i)=>{const empty=!r.time&&!r.train_number,review=r.confidence<.78||r.note||empty;if(review)n++;const tr=document.createElement("tr");if(review)tr.classList.add("review");if(empty)tr.classList.add("empty");tr.innerHTML=`<td>${r.track}<span class="confidence">${Math.round(r.confidence*100)}%</span></td><td><input data-i="${i}" data-k="time" value="${esc(r.time)}" placeholder="--:--"></td><td><input data-i="${i}" data-k="train_number" value="${esc(r.train_number)}" placeholder="空"></td><td><input class="note-input" data-i="${i}" data-k="note" value="${esc(r.note)}" placeholder="无"></td>`;E.resultBody.appendChild(tr)});E.summary.textContent=`31个股道，${n}行需要人工确认。`;E.resultCard.classList.remove("hidden")}
+async function recognize(){
+ if(!file)return;E.recognizeBtn.disabled=true;E.progress.classList.remove("hidden");status(E.status,"正在本地压缩照片……");
+ try{const image=await compress(file);status(E.status,"大模型正在识别整张车表……");const d=await api("/recognize",{method:"POST",headers:headers(),body:JSON.stringify({image,note:E.extraNote.value.trim()})});rows=norm(d.rows);render();showQuota(d.usage);status(E.status,"识别完成，请检查黄色行。","success")}
+ catch(e){if(e.status===401){state.setToken("");authUI(false)}status(E.status,e.message,"error")}
+ finally{E.progress.classList.add("hidden");E.recognizeBtn.disabled=!file}
 }
-function canvasPoint(evt){
-  const rect=selectCanvas.getBoundingClientRect();
-  const touch=evt.touches?evt.touches[0]:evt;
-  return{
-    x:(touch.clientX-rect.left)*(selectCanvas.width/rect.width),
-    y:(touch.clientY-rect.top)*(selectCanvas.height/rect.height)
-  };
-}
-selectCanvas.addEventListener("click",evt=>{
-  if(!image||points.length>=4)return;
-  points.push(canvasPoint(evt));
-  updateHint();
-  drawSelection();
-});
-function updateHint(){
-  const labels=["请点击目标表格的左上角。","请点击目标表格的右上角。","请点击目标表格的右下角。","请点击目标表格的左下角。"];
-  if(points.length<4){
-    pointHint.textContent=labels[points.length];
-    warpBtn.disabled=true;
-  }else{
-    pointHint.textContent="四个角已选好，可以拉正。";
-    warpBtn.disabled=false;
-  }
-}
-function resetPoints(){
-  points=[];
-  updateHint();
-  drawSelection();
-}
-resetPointsBtn.addEventListener("click",resetPoints);
-
-warpBtn.addEventListener("click",()=>{
-  if(points.length!==4)return;
-  const srcPts=points.map(p=>({x:p.x/displayScale,y:p.y/displayScale}));
-  const topW=distance(srcPts[0],srcPts[1]);
-  const bottomW=distance(srcPts[3],srcPts[2]);
-  const leftH=distance(srcPts[0],srcPts[3]);
-  const rightH=distance(srcPts[1],srcPts[2]);
-  const outW=Math.max(360,Math.round(Math.max(topW,bottomW)));
-  const outH=Math.max(620,Math.round(Math.max(leftH,rightH)));
-  warpedCanvas.width=outW;
-  warpedCanvas.height=outH;
-  warpPerspective(image,srcPts,warpedCanvas);
-  overlayRows(warpedCanvas);
-  warpedImageData=warpedCanvas.getContext("2d").getImageData(0,0,outW,outH);
-  currentRow=0;
-  drawCurrentRow();
-  resultPanel.classList.remove("hidden");
-  rowsPanel.classList.remove("hidden");
-  resultPanel.scrollIntoView({behavior:"smooth",block:"start"});
-});
-
-function distance(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
-
-function warpPerspective(img,src,canvas){
-  const ctx=canvas.getContext("2d");
-  const w=canvas.width,h=canvas.height;
-  const off=document.createElement("canvas");
-  off.width=img.naturalWidth;off.height=img.naturalHeight;
-  off.getContext("2d").drawImage(img,0,0);
-  const srcData=off.getContext("2d").getImageData(0,0,off.width,off.height);
-  const out=ctx.createImageData(w,h);
-  for(let y=0;y<h;y++){
-    const v=y/(h-1);
-    const lx=src[0].x+(src[3].x-src[0].x)*v;
-    const ly=src[0].y+(src[3].y-src[0].y)*v;
-    const rx=src[1].x+(src[2].x-src[1].x)*v;
-    const ry=src[1].y+(src[2].y-src[1].y)*v;
-    for(let x=0;x<w;x++){
-      const u=x/(w-1);
-      const sx=lx+(rx-lx)*u;
-      const sy=ly+(ry-ly)*u;
-      bilinearSample(srcData,off.width,off.height,sx,sy,out.data,(y*w+x)*4);
-    }
-  }
-  ctx.putImageData(out,0,0);
-}
-
-function bilinearSample(srcData,w,h,x,y,dst,di){
-  x=Math.max(0,Math.min(w-1,x));y=Math.max(0,Math.min(h-1,y));
-  const x0=Math.floor(x),x1=Math.min(w-1,x0+1),y0=Math.floor(y),y1=Math.min(h-1,y0+1);
-  const dx=x-x0,dy=y-y0;
-  for(let c=0;c<4;c++){
-    const p00=srcData.data[(y0*w+x0)*4+c],p10=srcData.data[(y0*w+x1)*4+c];
-    const p01=srcData.data[(y1*w+x0)*4+c],p11=srcData.data[(y1*w+x1)*4+c];
-    dst[di+c]=(p00*(1-dx)+p10*dx)*(1-dy)+(p01*(1-dx)+p11*dx)*dy;
-  }
-}
-
-function overlayRows(canvas){
-  const ctx=canvas.getContext("2d");
-  const h=canvas.height,w=canvas.width;
-  ctx.save();
-  ctx.strokeStyle="rgba(37,99,235,.85)";
-  ctx.lineWidth=Math.max(1,w/500);
-  ctx.font=`bold ${Math.max(16,Math.round(w/32))}px -apple-system`;
-  ctx.textBaseline="middle";
-  for(let i=0;i<=31;i++){
-    const y=i*h/31;
-    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();
-    if(i<31){
-      const y2=(i+1)*h/31;
-      ctx.fillStyle="rgba(245,158,11,.92)";
-      ctx.fillRect(0,y,Math.max(48,w*.09),y2-y);
-      ctx.fillStyle="#111827";
-      ctx.fillText(String(31+i),8,(y+y2)/2);
-    }
-  }
-  ctx.restore();
-}
-
-function drawCurrentRow(){
-  if(!warpedImageData)return;
-  const src=warpedCanvas;
-  const rowH=src.height/31;
-  const y=Math.floor(currentRow*rowH);
-  const h=Math.ceil(rowH);
-  rowCanvas.width=src.width;
-  rowCanvas.height=Math.max(120,h*3);
-  const ctx=rowCanvas.getContext("2d");
-  ctx.clearRect(0,0,rowCanvas.width,rowCanvas.height);
-  ctx.drawImage(src,0,y,src.width,h,0,0,rowCanvas.width,rowCanvas.height);
-  rowLabel.textContent=String(31+currentRow);
-  prevRowBtn.disabled=currentRow===0;
-  nextRowBtn.disabled=currentRow===30;
-}
-prevRowBtn.addEventListener("click",()=>{if(currentRow>0){currentRow--;drawCurrentRow()}});
-nextRowBtn.addEventListener("click",()=>{if(currentRow<30){currentRow++;drawCurrentRow()}});
-
-if("serviceWorker"in navigator){navigator.serviceWorker.register("sw.js").catch(()=>{})}
+function csvEsc(v){const s=String(v??"");return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s}
+function exportCsv(){const lines=[["股道","时间","车号","备注"],...rows.map(r=>[r.track,r.time,r.train_number,r.note])].map(x=>x.map(csvEsc).join(","));const b=new Blob(["\uFEFF"+lines.join("\n")],{type:"text/csv;charset=utf-8"}),a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`车表_${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(a.href)}
+E.settingsBtn.onclick=()=>E.settingsPanel.classList.toggle("hidden");E.closeSettings.onclick=()=>E.settingsPanel.classList.add("hidden");
+E.saveWorker.onclick=()=>{localStorage.setItem("ts_worker",E.workerUrl.value.trim().replace(/\/+$/,""));check()};
+E.logoutBtn.onclick=()=>{state.setToken("");authUI(false);status(E.authStatus,"本机令牌已删除。","success")};
+E.authorizeBtn.onclick=authorize;
+E.imageInput.onchange=()=>{const f=E.imageInput.files?.[0];if(!f)return;if(!/^image\/(jpeg|png|webp)$/.test(f.type)){status(E.status,"只支持 JPG、PNG 或 WebP。","error");return}if(f.size>12*1024*1024){status(E.status,"原图不能超过12MB。","error");return}file=f;E.preview.src=URL.createObjectURL(f);E.previewWrap.classList.remove("hidden");E.recognizeBtn.disabled=false;status(E.status,"照片已选择。")};
+E.removeImage.onclick=resetImage;E.recognizeBtn.onclick=recognize;
+E.resultBody.oninput=e=>{const x=e.target.closest("input[data-i]");if(x)rows[Number(x.dataset.i)][x.dataset.k]=x.value.trim()};
+E.clearResult.onclick=()=>{rows=[];E.resultCard.classList.add("hidden")};
+E.copyBtn.onclick=async()=>{const t=[["股道","时间","车号","备注"],...rows.map(r=>[r.track,r.time,r.train_number,r.note])].map(x=>x.join("\t")).join("\n");try{await navigator.clipboard.writeText(t);status(E.status,"已复制，可粘贴到WPS或Excel。","success")}catch{status(E.status,"复制失败，请导出CSV。","error")}};
+E.csvBtn.onclick=exportCsv;
+E.workerUrl.value=state.base;authUI(!!state.token);check();
+if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});

@@ -1,11 +1,10 @@
 {
   "name": "TrainSheet AI",
-  "short_name": "车号助手",
-  "description": "手写车号识别助手",
+  "short_name": "车表助手",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#f5f7fb",
-  "theme_color": "#f5f7fb",
+  "background_color": "#eef3f9",
+  "theme_color": "#2563eb",
   "orientation": "portrait",
   "icons": []
 }
