@@ -1,14 +1,6 @@
-/* TrainSheet AI Version: 0.9.2 */
-const $=id=>document.getElementById(id);
-const cameraInput=$("cameraInput"),galleryInput=$("galleryInput"),previewCard=$("previewCard"),previewImage=$("previewImage"),overlayCanvas=$("overlayCanvas"),startBtn=$("startBtn"),clearBtn=$("clearBtn"),statusText=$("statusText"),workflowState=$("workflowState"),anchorCount=$("anchorCount"),anchorScore=$("anchorScore"),progressWrap=$("progressWrap"),progressBar=$("progressBar"),anchorPanel=$("anchorPanel"),anchorChips=$("anchorChips"),rangeBadge=$("rangeBadge"),targetPanel=$("targetPanel"),targetCanvas=$("targetCanvas"),targetBadge=$("targetBadge"),rowsPanel=$("rowsPanel"),rowsCanvas=$("rowsCanvas"),fallbackPanel=$("fallbackPanel"),debugPanel=$("debugPanel"),debugText=$("debugText");
-let currentImage=null,currentImageUrl=null,worker=null,lastResult=null;
-const OCR_MAX_WIDTH=2200;
-const MIN_ANCHORS=3;
-
-cameraInput.addEventListener("change",()=>handleImage(cameraInput.files[0]));
-galleryInput.addEventListener("change",()=>handleImage(galleryInput.files[0]));
-clearBtn.addEventListener("click",clearAll);
-startBtn.addEventListener("click",runAnchorRecognition);
+/* TrainSheet AI Version: 0.9.4 */
+const cameraInput=document.getElementById("cameraInput"),galleryInput=document.getElementById("galleryInput"),previewCard=document.getElementById("previewCard"),previewImage=document.getElementById("previewImage"),overlayCanvas=document.getElementById("overlayCanvas"),startBtn=document.getElementById("startBtn"),clearBtn=document.getElementById("clearBtn"),statusText=document.getElementById("statusText"),workflowState=document.getElementById("workflowState"),rowBoundaryCount=document.getElementById("rowBoundaryCount"),verticalCount=document.getElementById("verticalCount"),targetPanel=document.getElementById("targetPanel"),targetCanvas=document.getElementById("targetCanvas"),rowsPanel=document.getElementById("rowsPanel"),rowsCanvas=document.getElementById("rowsCanvas"),targetStatus=document.getElementById("targetStatus"),debugPanel=document.getElementById("debugPanel"),debugText=document.getElementById("debugText");
+let currentImage=null,currentImageUrl=null,result=null;
 
 function handleImage(file){
   if(!file)return;
@@ -16,120 +8,293 @@ function handleImage(file){
   currentImageUrl=URL.createObjectURL(file);
   const img=new Image();
   img.onload=()=>{
-    currentImage=img;previewImage.src=currentImageUrl;previewCard.classList.remove("hidden");startBtn.disabled=false;resetOutput();
-    statusText.textContent="照片已载入。V0.9.2 会分区域、分阈值扫描印刷编号。";
+    currentImage=img;
+    previewImage.src=currentImageUrl;
+    previewCard.classList.remove("hidden");
+    startBtn.disabled=false;
+    reset();
+    statusText.textContent="照片已载入。程序会寻找固定的 32 条横边界，而不是识别 31～61 的文字。";
   };
   img.src=currentImageUrl;
 }
-
-function clearAll(){
+cameraInput.addEventListener("change",()=>handleImage(cameraInput.files[0]));
+galleryInput.addEventListener("change",()=>handleImage(galleryInput.files[0]));
+clearBtn.addEventListener("click",()=>{
   if(currentImageUrl)URL.revokeObjectURL(currentImageUrl);
-  currentImageUrl=null;currentImage=null;lastResult=null;previewImage.src="";previewCard.classList.add("hidden");startBtn.disabled=true;
-  resetOutput();statusText.textContent="请先拍照或从相册选择一张完整图片。";
-}
+  currentImageUrl=null;currentImage=null;previewImage.src="";
+  previewCard.classList.add("hidden");startBtn.disabled=true;reset();
+  statusText.textContent="请先拍照或从相册选择一张完整图片。";
+});
 
-function resetOutput(){
-  clearSteps();workflowState.textContent="等待处理";anchorCount.textContent="0";anchorScore.textContent="0";progressWrap.classList.add("hidden");progressBar.style.width="0%";
-  anchorPanel.classList.add("hidden");targetPanel.classList.add("hidden");rowsPanel.classList.add("hidden");fallbackPanel.classList.add("hidden");debugPanel.classList.add("hidden");
-  const ctx=overlayCanvas.getContext("2d");ctx.clearRect(0,0,overlayCanvas.width,overlayCanvas.height);
-}
-
-async function runAnchorRecognition(){
+startBtn.addEventListener("click",async()=>{
   if(!currentImage)return;
-  startBtn.disabled=true;resetOutput();progressWrap.classList.remove("hidden");
-  try{
-    let sources=[];
-    await runStep("photo","正在生成多组增强图……",async()=>{sources=buildOCRSources(currentImage)});
-    await runStep("ocr","正在分区域运行本地 OCR……",async()=>{
-      const w=await getWorker();
-      const allWords=[];const passes=[];
-      for(let i=0;i<sources.length;i++){
-        const src=sources[i];
-        statusText.textContent=`OCR 扫描 ${i+1}/${sources.length}：${src.name}`;
-        await w.setParameters({tessedit_char_whitelist:"0123456789",tessedit_pageseg_mode:src.psm,preserve_interword_spaces:"1",user_defined_dpi:"300"});
-        const res=await w.recognize(src.canvas,{}, {text:true,tsv:true,blocks:false});
-        const words=parseTSVFlexible(res.data.tsv,src);
-        allWords.push(...words);passes.push({name:src.name,count:words.length,text:(res.data.text||"").slice(0,180)});
-        progressBar.style.width=Math.round((i+1)/sources.length*92)+"%";
-      }
-      lastResult={words:dedupeWords(allWords),passes};
-    });
-    await runStep("anchor","正在寻找连续的 31～61……",async()=>{
-      lastResult.sequence=findBestAnchorSequence(lastResult.words,currentImage.naturalWidth,currentImage.naturalHeight);
-    });
-    const seq=lastResult.sequence;
-    if(!seq||seq.anchors.length<MIN_ANCHORS||seq.score<34){markFail("anchor");showFallback(seq,lastResult);return;}
-    await runStep("fit","正在拟合编号列的倾斜方向……",async()=>{lastResult.geometry=buildTargetGeometry(seq,currentImage)});
-    await runStep("crop","正在拉直并裁出目标区……",async()=>{drawAnchorOverlay(seq,lastResult.geometry);drawRectifiedTarget(lastResult.geometry,targetCanvas,false);drawRectifiedTarget(lastResult.geometry,rowsCanvas,true)});
-    showSuccess(seq,lastResult.geometry,lastResult);
-  }catch(err){
-    console.error(err);fallbackPanel.classList.remove("hidden");debugPanel.classList.remove("hidden");debugText.textContent=String(err&&err.stack?err.stack:err);
-    statusText.textContent="本地 OCR 运行失败。请刷新后重试，并把调试信息截图发给我。";workflowState.textContent="处理失败";
-  }finally{startBtn.disabled=false;}
-}
-
-async function getWorker(){
-  if(worker)return worker;if(!window.Tesseract)throw new Error("Tesseract.js 未加载");
-  worker=await Tesseract.createWorker("eng",1,{workerPath:"./worker.min.js",corePath:"./",langPath:"./",gzip:true,
-    logger:m=>{if(typeof m.progress==="number"){const pct=Math.max(2,Math.min(90,Math.round(m.progress*90)));progressBar.style.width=pct+"%";if(m.status)statusText.textContent="OCR："+translateStatus(m.status)+" "+pct+"%";}},errorHandler:e=>console.error("OCR worker",e)});
-  return worker;
-}
-function translateStatus(s){const map={"loading tesseract core":"载入识别引擎","initializing tesseract":"初始化识别引擎","loading language traineddata":"载入数字模型","initializing api":"初始化接口","recognizing text":"识别印刷编号"};return map[s]||s}
-
-function buildOCRSources(img){
-  const defs=[
-    {name:"右侧70%·高对比",left:.30,width:.70,mode:"threshold",psm:"11"},
-    {name:"右侧45%·放大",left:.52,width:.48,mode:"adaptive",psm:"11"},
-    {name:"中右竖条·印刷编号",left:.45,width:.28,mode:"threshold",psm:"6"},
-    {name:"整图·灰度补扫",left:0,width:1,mode:"gray",psm:"11"}
-  ];
-  return defs.map(d=>makeSource(img,d));
-}
-function makeSource(img,d){
-  const cropX=img.naturalWidth*d.left,cropW=img.naturalWidth*d.width;
-  const scale=Math.min(2.2,OCR_MAX_WIDTH/cropW);const outW=Math.max(1,Math.round(cropW*scale)),outH=Math.max(1,Math.round(img.naturalHeight*scale));
-  const c=document.createElement("canvas"),ctx=c.getContext("2d",{willReadFrequently:true});c.width=outW;c.height=outH;ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality="high";
-  ctx.drawImage(img,cropX,0,cropW,img.naturalHeight,0,0,outW,outH);
-  const im=ctx.getImageData(0,0,outW,outH),px=im.data;
-  for(let i=0;i<px.length;i+=4){const g=Math.round(.299*px[i]+.587*px[i+1]+.114*px[i+2]);let v=g;if(d.mode==="threshold")v=g<190?0:255;else if(d.mode==="adaptive")v=g<165?0:(g<205?Math.max(0,(g-165)*6):255);else v=Math.max(0,Math.min(255,(g-128)*1.45+128));px[i]=px[i+1]=px[i+2]=v;}
-  ctx.putImageData(im,0,0);return{canvas:c,scale,cropX,name:d.name,psm:d.psm};
-}
-
-function parseTSVFlexible(tsv,src){
-  if(!tsv)return[];const lines=tsv.trim().split(/\r?\n/);if(lines.length<2)return[];const headers=lines[0].split("\t"),idx={};headers.forEach((h,i)=>idx[h]=i);const words=[];
-  for(let n=1;n<lines.length;n++){
-    const p=lines[n].split("\t");if(p[idx.level]!=="5")continue;
-    const raw=(p[idx.text]||"").replace(/[OoQD]/g,"0").replace(/[Il|]/g,"1").replace(/[^0-9]/g,"");if(raw.length<2)continue;
-    const left=Number(p[idx.left]),top=Number(p[idx.top]),width=Number(p[idx.width]),height=Number(p[idx.height]),conf=Number(p[idx.conf]);if(!Number.isFinite(left+top+width+height))continue;
-    const matches=[];
-    if(/^\d{2}$/.test(raw)){const v=Number(raw);if(v>=31&&v<=61)matches.push({value:v,pos:.5});}
-    else{
-      for(let k=0;k<raw.length-1;k++){const v=Number(raw.slice(k,k+2));if(v>=31&&v<=61)matches.push({value:v,pos:(k+1)/raw.length});}
-    }
-    for(const m of matches){const cxLocal=left+Math.max(0,Math.min(width,width*m.pos));words.push({value:m.value,text:String(m.value),conf:Math.max(0,conf-raw.length*2),x0:(left+src.cropX*src.scale)/src.scale,y0:top/src.scale,x1:(left+width+src.cropX*src.scale)/src.scale,y1:(top+height)/src.scale,cx:(cxLocal+src.cropX*src.scale)/src.scale,cy:(top+height/2)/src.scale,source:src.name,raw});}
+  startBtn.disabled=true;
+  reset(false);
+  await step("photo","正在读取照片……");
+  const working=makeWorkingCanvas(currentImage);
+  await step("angle","正在估算表格倾斜角……");
+  const angle=estimateAngle(working.canvas);
+  const rotated=rotateCanvas(working.canvas,-angle);
+  await step("rows","正在寻找固定 32 条横边界……");
+  const rowInfo=findBest32Rows(rotated);
+  rowBoundaryCount.textContent=String(rowInfo.rows.length);
+  if(rowInfo.rows.length!==32){
+    failStep("rows");
+    showFailure({angle,rowInfo,message:"未找到可靠的 32 条横边界"});
+    startBtn.disabled=false;
+    return;
   }
-  return words;
+  await step("cols","正在寻找右侧表格竖边界……");
+  const colInfo=findRightColumns(rotated,rowInfo);
+  verticalCount.textContent=String(colInfo.cols.length);
+  if(colInfo.cols.length<4){
+    failStep("cols");
+    showFailure({angle,rowInfo,colInfo,message:"横边界已找到，但竖边界不足"});
+    startBtn.disabled=false;
+    return;
+  }
+  await step("crop","正在裁出固定 31 行目标区……");
+  result={angle,rotated,rowInfo,colInfo};
+  drawAll(result);
+  statusText.textContent="已按固定 31 行模板裁出目标区。请检查是否从 31 一直到 61。";
+  startBtn.disabled=false;
+});
+
+function makeWorkingCanvas(img){
+  const maxW=1200;
+  const scale=Math.min(1,maxW/img.naturalWidth);
+  const canvas=document.createElement("canvas");
+  canvas.width=Math.round(img.naturalWidth*scale);
+  canvas.height=Math.round(img.naturalHeight*scale);
+  canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+  return{canvas,scale};
 }
-function dedupeWords(words){const out=[];words.sort((a,b)=>b.conf-a.conf);for(const w of words){if(out.some(o=>o.value===w.value&&Math.hypot(o.cx-w.cx,o.cy-w.cy)<Math.max(18,w.y1-w.y0)*1.5))continue;out.push(w)}return out}
 
-function findBestAnchorSequence(words,W,H){
-  if(words.length<2)return null;let best=null;const xTolerance=Math.max(45,W*.10);
-  for(const seed of words){const group=words.filter(w=>Math.abs(w.cx-seed.cx)<xTolerance).sort((a,b)=>a.cy-b.cy);if(group.length<2)continue;const clean=bestMonotonicSubset(group);if(clean.length<2)continue;
-    const model=linearFit(clean.map(w=>w.value),clean.map(w=>w.cy)),xModel=linearFit(clean.map(w=>w.cy),clean.map(w=>w.cx));const residual=Math.sqrt(clean.reduce((s,w)=>s+Math.pow(w.cy-(model.a*w.value+model.b),2),0)/clean.length);const rowStep=Math.abs(model.a);const range=Math.max(...clean.map(w=>w.value))-Math.min(...clean.map(w=>w.value));const confidence=clean.reduce((s,w)=>s+Math.max(0,w.conf),0)/clean.length;const rightBonus=clean.reduce((s,w)=>s+w.cx,0)/clean.length>W*.50?14:0;const coverage=Math.min(31,range+1)/31;const regularity=rowStep>3?Math.max(0,1-residual/(rowStep*1.8)):0;const score=clean.length*8+coverage*28+regularity*24+rightBonus+Math.min(10,confidence/10);const candidate={anchors:clean,model,xModel,rowStep,residual,score,range,confidence};if(!best||candidate.score>best.score)best=candidate;
-  }return best;
+function estimateAngle(canvas){
+  const ctx=canvas.getContext("2d");
+  const {width:w,height:h}=canvas;
+  const img=ctx.getImageData(0,0,w,h).data;
+  const candidates=[];
+  for(let deg=-12;deg<=12;deg+=1){
+    const rad=deg*Math.PI/180,cos=Math.cos(rad),sin=Math.sin(rad);
+    let score=0;
+    for(let y=Math.floor(h*.08);y<h*.94;y+=6){
+      let run=0,best=0;
+      for(let x=Math.floor(w*.35);x<w*.98;x+=2){
+        const xx=Math.round(x*cos-y*sin+w*.5*(1-cos)+h*.5*sin);
+        const yy=Math.round(x*sin+y*cos+h*.5*(1-cos)-w*.5*sin);
+        if(xx<0||xx>=w||yy<0||yy>=h){run=0;continue}
+        const i=(yy*w+xx)*4;
+        const gray=.299*img[i]+.587*img[i+1]+.114*img[i+2];
+        if(gray<120){run++;best=Math.max(best,run)}else run=0;
+      }
+      score+=best;
+    }
+    candidates.push({deg,score});
+  }
+  candidates.sort((a,b)=>b.score-a.score);
+  return candidates[0].deg;
 }
-function bestMonotonicSubset(group){const sorted=[...group].sort((a,b)=>a.cy-b.cy),dp=sorted.map(()=>({len:1,score:0,prev:-1}));let bestI=0;for(let i=0;i<sorted.length;i++){for(let j=0;j<i;j++){const dv=sorted[i].value-sorted[j].value,dy=sorted[i].cy-sorted[j].cy;if(dv<=0||dv>15||dy<=0)continue;const ratio=dy/dv;if(ratio<2||ratio>220)continue;const add=1+Math.min(2,dv/5);if(dp[j].len+1>dp[i].len||(dp[j].len+1===dp[i].len&&dp[j].score+add>dp[i].score))dp[i]={len:dp[j].len+1,score:dp[j].score+add,prev:j}}if(dp[i].len>dp[bestI].len||(dp[i].len===dp[bestI].len&&dp[i].score>dp[bestI].score))bestI=i}const result=[];let k=bestI;while(k>=0){result.push(sorted[k]);k=dp[k].prev}return result.reverse()}
-function linearFit(xs,ys){const n=xs.length,mx=xs.reduce((a,b)=>a+b,0)/n,my=ys.reduce((a,b)=>a+b,0)/n;let num=0,den=0;for(let i=0;i<n;i++){num+=(xs[i]-mx)*(ys[i]-my);den+=(xs[i]-mx)*(xs[i]-mx)}const a=den?num/den:0,b=my-a*mx;return{a,b}}
 
-function buildTargetGeometry(seq,img){const y31=seq.model.a*31+seq.model.b,y61=seq.model.a*61+seq.model.b,rowH=Math.max(8,Math.abs(seq.model.a));const topY=Math.max(0,Math.min(y31,y61)-rowH*.72),bottomY=Math.min(img.naturalHeight,Math.max(y31,y61)+rowH*.72);const anchorX=y=>seq.xModel.a*y+seq.xModel.b;const width=estimateTargetWidth(img,anchorX,topY,bottomY,rowH);const leftOffset=Math.max(rowH*.9,width*.06);const topLeftX=Math.max(0,anchorX(topY)-leftOffset),bottomLeftX=Math.max(0,anchorX(bottomY)-leftOffset),topRightX=Math.min(img.naturalWidth,topLeftX+width),bottomRightX=Math.min(img.naturalWidth,bottomLeftX+width);return{topY,bottomY,rowH,width,topLeftX,bottomLeftX,topRightX,bottomRightX}}
-function estimateTargetWidth(img,anchorX,topY,bottomY,rowH){return Math.min(img.naturalWidth*.48,Math.max(rowH*6.2,rowH*9.2))}
+function rotateCanvas(src,deg){
+  const rad=deg*Math.PI/180,cos=Math.abs(Math.cos(rad)),sin=Math.abs(Math.sin(rad));
+  const w=src.width,h=src.height;
+  const out=document.createElement("canvas");
+  out.width=Math.ceil(w*cos+h*sin);
+  out.height=Math.ceil(w*sin+h*cos);
+  const ctx=out.getContext("2d");
+  ctx.translate(out.width/2,out.height/2);
+  ctx.rotate(rad);
+  ctx.drawImage(src,-w/2,-h/2);
+  return out;
+}
 
-function drawAnchorOverlay(seq,g){const box=previewImage.getBoundingClientRect();overlayCanvas.width=box.width;overlayCanvas.height=box.height;const ctx=overlayCanvas.getContext("2d");ctx.clearRect(0,0,box.width,box.height);const sx=box.width/currentImage.naturalWidth,sy=box.height/currentImage.naturalHeight;ctx.font="bold 11px -apple-system";ctx.textAlign="center";ctx.textBaseline="middle";for(const a of seq.anchors){ctx.fillStyle="#16a34a";ctx.beginPath();ctx.arc(a.cx*sx,a.cy*sy,8,0,Math.PI*2);ctx.fill();ctx.fillStyle="#fff";ctx.fillText(String(a.value),a.cx*sx,a.cy*sy)}ctx.strokeStyle="#f59e0b";ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(g.topLeftX*sx,g.topY*sy);ctx.lineTo(g.topRightX*sx,g.topY*sy);ctx.lineTo(g.bottomRightX*sx,g.bottomY*sy);ctx.lineTo(g.bottomLeftX*sx,g.bottomY*sy);ctx.closePath();ctx.stroke()}
-function drawRectifiedTarget(g,canvas,withRows){const outW=720,outH=31*46;canvas.width=outW;canvas.height=outH;const ctx=canvas.getContext("2d");ctx.fillStyle="#fff";ctx.fillRect(0,0,outW,outH);const strips=Math.min(outH,900);for(let i=0;i<strips;i++){const t=i/(strips-1),srcY=g.topY+(g.bottomY-g.topY)*t,left=g.topLeftX+(g.bottomLeftX-g.topLeftX)*t,right=g.topRightX+(g.bottomRightX-g.topRightX)*t,dstY=Math.floor(i*outH/strips),dstH=Math.ceil(outH/strips)+1;ctx.drawImage(currentImage,left,srcY,Math.max(1,right-left),Math.max(1,(g.bottomY-g.topY)/strips+1),0,dstY,outW,dstH)}if(withRows){ctx.strokeStyle="rgba(37,99,235,.8)";ctx.lineWidth=1;for(let i=0;i<=31;i++){const y=i*outH/31;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(outW,y);ctx.stroke()}ctx.fillStyle="rgba(37,99,235,.9)";ctx.font="bold 15px sans-serif";for(let i=0;i<31;i++)ctx.fillText(String(31+i),5,(i+.65)*outH/31)}}
+function findBest32Rows(canvas){
+  const ctx=canvas.getContext("2d"),w=canvas.width,h=canvas.height;
+  const img=ctx.getImageData(0,0,w,h).data;
+  const x1=Math.floor(w*.52),x2=Math.floor(w*.98);
+  const score=new Array(h).fill(0);
+  for(let y=Math.floor(h*.05);y<h*.96;y++){
+    let dark=0;
+    for(let x=x1;x<x2;x+=2){
+      const i=(y*w+x)*4;
+      const gray=.299*img[i]+.587*img[i+1]+.114*img[i+2];
+      if(gray<135)dark++;
+    }
+    score[y]=dark;
+  }
+  const peaks=clusterPeaks(score,Math.max(12,(x2-x1)/2*.10),4);
+  let best={rows:[],score:-1,spacing:0};
+  for(let start=0;start<peaks.length;start++){
+    for(let end=start+31;end<peaks.length;end++){
+      const subset=peaks.slice(start,end+1);
+      if(subset.length<32)continue;
+      for(let offset=0;offset<=subset.length-32;offset++){
+        const rows=subset.slice(offset,offset+32);
+        const gaps=[];
+        for(let i=1;i<rows.length;i++)gaps.push(rows[i]-rows[i-1]);
+        const med=median(gaps);
+        if(med<4||med>h*.06)continue;
+        const regular=gaps.filter(g=>Math.abs(g-med)/med<.35).length/gaps.length;
+        const span=rows[31]-rows[0];
+        const spanScore=(span>h*.22&&span<h*.88)?1:.35;
+        const rightDark=averageRowDarkness(score,rows);
+        const total=regular*65+spanScore*20+Math.min(15,rightDark/10);
+        if(total>best.score)best={rows,score:total,spacing:med,regular};
+      }
+    }
+  }
+  return best;
+}
 
-function showSuccess(seq,g,result){const vals=seq.anchors.map(a=>a.value).sort((a,b)=>a-b);anchorCount.textContent=String(vals.length);anchorScore.textContent=String(Math.min(99,Math.round(seq.score)));anchorPanel.classList.remove("hidden");targetPanel.classList.remove("hidden");rowsPanel.classList.remove("hidden");debugPanel.classList.remove("hidden");rangeBadge.textContent=`${Math.min(...vals)}～${Math.max(...vals)}`;anchorChips.innerHTML=seq.anchors.sort((a,b)=>a.value-b.value).map(a=>`<span class="anchor-chip ${a.conf<45?'low':''}">${a.value} · ${Math.round(a.conf)}%</span>`).join("");targetBadge.textContent=`${Math.min(99,Math.round(seq.score))} 分`;debugText.textContent=JSON.stringify({passes:result.passes,candidates:result.words.length,anchors:seq.anchors.map(a=>({n:a.value,conf:Math.round(a.conf),x:Math.round(a.cx),y:Math.round(a.cy),source:a.source,raw:a.raw})),rowHeight:Math.round(g.rowH),targetWidth:Math.round(g.width),score:Math.round(seq.score),residual:Number(seq.residual.toFixed(1))},null,2);workflowState.textContent="锚点定位完成";statusText.textContent="已根据印刷编号定位目标区。请检查拉直结果是否从31完整到61。";progressBar.style.width="100%"}
-function showFallback(seq,result){fallbackPanel.classList.remove("hidden");debugPanel.classList.remove("hidden");anchorCount.textContent=seq?String(seq.anchors.length):"0";anchorScore.textContent=seq?String(Math.round(seq.score)):"0";debugText.textContent=JSON.stringify({passes:result.passes,candidates:result.words.length,sequence:seq?{anchors:seq.anchors.map(a=>({n:a.value,conf:Math.round(a.conf),x:Math.round(a.cx),y:Math.round(a.cy),source:a.source,raw:a.raw})),score:Math.round(seq.score),residual:Number(seq.residual.toFixed(1))}:null},null,2);workflowState.textContent="未可靠定位";statusText.textContent="多区域 OCR 后仍未形成可靠连续编号，程序已停止，没有自行猜测。"}
-async function runStep(name,text,job){workflowState.textContent=text.replace("……","");statusText.textContent=text;setStep(name,"active");await job();setStep(name,"done")}
-function setStep(name,state){const el=document.querySelector(`[data-step="${name}"]`);if(!el)return;el.classList.remove("active","done","fail");if(state)el.classList.add(state)}
-function markFail(name){setStep(name,"fail")}function clearSteps(){document.querySelectorAll(".step").forEach(x=>x.classList.remove("active","done","fail"))}
-if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(console.error)}
+function findRightColumns(canvas,rowInfo){
+  const ctx=canvas.getContext("2d"),w=canvas.width,h=canvas.height;
+  const img=ctx.getImageData(0,0,w,h).data;
+  const y1=Math.max(0,Math.floor(rowInfo.rows[0]-2)),y2=Math.min(h-1,Math.ceil(rowInfo.rows[31]+2));
+  const score=new Array(w).fill(0);
+  for(let x=Math.floor(w*.45);x<w*.99;x++){
+    let dark=0;
+    for(let y=y1;y<=y2;y+=2){
+      const i=(y*w+x)*4;
+      const gray=.299*img[i]+.587*img[i+1]+.114*img[i+2];
+      if(gray<135)dark++;
+    }
+    score[x]=dark;
+  }
+  const peaks=clusterPeaks(score,Math.max(8,(y2-y1)/2*.10),4);
+  const candidates=peaks.filter(x=>x>w*.48);
+  let best={cols:[],score:-1};
+  for(let i=0;i<candidates.length;i++){
+    for(let j=i+3;j<candidates.length;j++){
+      const cols=candidates.slice(i,j+1);
+      if(cols.length<4||cols.length>7)continue;
+      const width=cols[cols.length-1]-cols[0];
+      if(width<w*.12||width>w*.48)continue;
+      const gaps=[];for(let k=1;k<cols.length;k++)gaps.push(cols[k]-cols[k-1]);
+      const narrowWidePattern=columnPatternScore(gaps);
+      const rightScore=cols[0]>w*.55?25:12;
+      const countScore=cols.length===5?35:cols.length===4||cols.length===6?24:12;
+      const total=narrowWidePattern*40+rightScore+countScore;
+      if(total>best.score)best={cols,score:total,gaps};
+    }
+  }
+  if(best.cols.length>5){
+    best.cols=best.cols.slice(-5);
+  }
+  return best;
+}
+
+function columnPatternScore(gaps){
+  if(gaps.length<3)return 0;
+  const sorted=[...gaps].sort((a,b)=>a-b);
+  const min=sorted[0],max=sorted[sorted.length-1];
+  if(min<=0)return 0;
+  const ratio=max/min;
+  return Math.max(0,1-Math.abs(ratio-2.2)/2.2);
+}
+
+function clusterPeaks(score,threshold,gap){
+  const raw=[];let start=-1,sum=0,count=0,maxVal=0,maxIdx=0;
+  for(let i=0;i<score.length;i++){
+    if(score[i]>=threshold){
+      if(start<0){start=i;sum=0;count=0;maxVal=0;maxIdx=i}
+      sum+=i;count++;
+      if(score[i]>maxVal){maxVal=score[i];maxIdx=i}
+    }else if(start>=0){
+      raw.push(maxIdx);start=-1;
+    }
+  }
+  if(start>=0)raw.push(maxIdx);
+  const out=[];
+  raw.forEach(v=>{
+    if(!out.length||v-out[out.length-1]>=gap)out.push(v);
+    else out[out.length-1]=Math.round((out[out.length-1]+v)/2);
+  });
+  return out;
+}
+
+function median(a){const b=[...a].sort((x,y)=>x-y);return b[Math.floor(b.length/2)]}
+function averageRowDarkness(score,rows){return rows.reduce((s,y)=>s+(score[Math.round(y)]||0),0)/rows.length}
+
+function drawAll(res){
+  drawOverlay(res);
+  drawTargetCrop(res);
+  drawRowsPreview(res);
+  targetPanel.classList.remove("hidden");
+  rowsPanel.classList.remove("hidden");
+  debugPanel.classList.remove("hidden");
+  targetStatus.textContent="31 行模板已锁定";
+  debugText.textContent=JSON.stringify({
+    angle:res.angle,
+    rowBoundaries:res.rowInfo.rows.length,
+    rowSpacing:Math.round(res.rowInfo.spacing*10)/10,
+    rowRegularity:Math.round((res.rowInfo.regular||0)*100)+"%",
+    verticalBoundaries:res.colInfo.cols.length,
+    verticalScore:Math.round(res.colInfo.score)
+  },null,2);
+}
+
+function drawOverlay(res){
+  const box=previewImage.getBoundingClientRect();
+  overlayCanvas.width=box.width;overlayCanvas.height=box.height;
+  const ctx=overlayCanvas.getContext("2d");
+  ctx.clearRect(0,0,box.width,box.height);
+  const sx=box.width/res.rotated.width,sy=box.height/res.rotated.height;
+  ctx.strokeStyle="rgba(37,99,235,.85)";ctx.lineWidth=1.2;
+  res.rowInfo.rows.forEach(y=>{ctx.beginPath();ctx.moveTo(0,y*sy);ctx.lineTo(box.width,y*sy);ctx.stroke()});
+  ctx.strokeStyle="rgba(22,163,74,.9)";ctx.lineWidth=1.8;
+  res.colInfo.cols.forEach(x=>{ctx.beginPath();ctx.moveTo(x*sx,0);ctx.lineTo(x*sx,box.height);ctx.stroke()});
+  const x1=res.colInfo.cols[0],x2=res.colInfo.cols[res.colInfo.cols.length-1],y1=res.rowInfo.rows[0],y2=res.rowInfo.rows[31];
+  ctx.strokeStyle="#f59e0b";ctx.lineWidth=5;ctx.strokeRect(x1*sx,y1*sy,(x2-x1)*sx,(y2-y1)*sy);
+}
+
+function drawTargetCrop(res){
+  const x1=res.colInfo.cols[0],x2=res.colInfo.cols[res.colInfo.cols.length-1],y1=res.rowInfo.rows[0],y2=res.rowInfo.rows[31];
+  const w=x2-x1,h=y2-y1;
+  targetCanvas.width=520;targetCanvas.height=Math.max(420,Math.round(520*h/w));
+  const ctx=targetCanvas.getContext("2d");
+  ctx.drawImage(res.rotated,x1,y1,w,h,0,0,targetCanvas.width,targetCanvas.height);
+  ctx.strokeStyle="#f59e0b";ctx.lineWidth=6;ctx.strokeRect(3,3,targetCanvas.width-6,targetCanvas.height-6);
+}
+
+function drawRowsPreview(res){
+  const x1=res.colInfo.cols[0],x2=res.colInfo.cols[res.colInfo.cols.length-1],y1=res.rowInfo.rows[0],y2=res.rowInfo.rows[31];
+  const w=x2-x1,h=y2-y1;
+  rowsCanvas.width=520;rowsCanvas.height=Math.max(520,Math.round(520*h/w));
+  const ctx=rowsCanvas.getContext("2d");
+  ctx.drawImage(res.rotated,x1,y1,w,h,0,0,rowsCanvas.width,rowsCanvas.height);
+  ctx.font="bold 14px -apple-system";ctx.textBaseline="middle";
+  for(let i=0;i<=31;i++){
+    const y=(res.rowInfo.rows[i]-y1)/h*rowsCanvas.height;
+    ctx.strokeStyle="rgba(37,99,235,.9)";ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(rowsCanvas.width,y);ctx.stroke();
+    if(i<31){
+      const yNext=(res.rowInfo.rows[i+1]-y1)/h*rowsCanvas.height;
+      ctx.fillStyle="rgba(245,158,11,.95)";
+      ctx.fillRect(0,y,38,yNext-y);
+      ctx.fillStyle="#111827";
+      ctx.fillText(String(31+i),8,(y+yNext)/2);
+    }
+  }
+  ctx.strokeStyle="#f59e0b";ctx.lineWidth=6;ctx.strokeRect(3,3,rowsCanvas.width-6,rowsCanvas.height-6);
+}
+
+function showFailure(info){
+  targetPanel.classList.add("hidden");rowsPanel.classList.add("hidden");
+  debugPanel.classList.remove("hidden");
+  debugText.textContent=JSON.stringify(info,null,2);
+  statusText.textContent=info.message+"。程序已停止，没有自行猜测。";
+}
+
+function reset(clear=true){
+  clearSteps();workflowState.textContent="等待处理";
+  rowBoundaryCount.textContent="0";verticalCount.textContent="0";
+  targetPanel.classList.add("hidden");rowsPanel.classList.add("hidden");debugPanel.classList.add("hidden");
+  const ctx=overlayCanvas.getContext("2d");ctx.clearRect(0,0,overlayCanvas.width,overlayCanvas.height);
+  if(clear)result=null;
+}
+function clearSteps(){document.querySelectorAll(".step").forEach(s=>s.classList.remove("active","done","fail"))}
+function failStep(n){const s=document.querySelector(`[data-step="${n}"]`);if(s){s.classList.remove("active","done");s.classList.add("fail")}}
+function done(n){const s=document.querySelector(`[data-step="${n}"]`);if(s){s.classList.remove("active");s.classList.add("done")}}
+async function step(n,t){workflowState.textContent=t.replace("……","");statusText.textContent=t;document.querySelector(`[data-step="${n}"]`)?.classList.add("active");await new Promise(r=>setTimeout(r,260));done(n)}
+if("serviceWorker"in navigator){navigator.serviceWorker.register("sw.js").catch(()=>{})}
