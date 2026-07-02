@@ -13,17 +13,12 @@
 <main class="app-shell">
   <header class="topbar">
     <div>
-      <p class="eyebrow">固定 31 行模板检测</p>
+      <p class="eyebrow">人工四角定位 · 可靠备用方案</p>
       <h1>TrainSheet AI</h1>
       <p class="sub">手写车号识别助手</p>
     </div>
-    <div class="badge">V0.9.4</div>
+    <div class="badge">V0.9.5</div>
   </header>
-
-  <section class="hero-card">
-    <div class="metric"><span id="rowBoundaryCount" class="metric-number">0</span><span class="metric-label">横边界</span></div>
-    <div class="metric"><span id="verticalCount" class="metric-number">0</span><span class="metric-label">竖边界</span></div>
-  </section>
 
   <section class="action-grid">
     <label class="action-card primary">
@@ -36,45 +31,54 @@
     </label>
   </section>
 
-  <section id="previewCard" class="panel hidden">
-    <div class="panel-title-row"><h2>原图检测结果</h2><button id="clearBtn" class="ghost-btn">清除</button></div>
-    <div class="image-stage">
-      <img id="previewImage" class="preview-image" alt="照片预览">
-      <canvas id="overlayCanvas" class="overlay-canvas"></canvas>
+  <section id="selectPanel" class="panel hidden">
+    <div class="panel-title-row">
+      <h2>点选四个角</h2>
+      <button id="resetPointsBtn" class="ghost-btn">重选</button>
     </div>
-    <p class="hint">蓝线为程序找到的 32 条横边界，绿线为右侧表格竖边界，橙框为最终目标区。</p>
+    <p id="pointHint" class="status strong">请点击目标表格的左上角。</p>
+    <div class="canvas-wrap">
+      <canvas id="selectCanvas" class="select-canvas"></canvas>
+    </div>
+    <div class="point-legend">
+      <span>1 左上</span><span>2 右上</span><span>3 右下</span><span>4 左下</span>
+    </div>
+    <button id="warpBtn" class="big-btn" disabled>拉正并生成 31 行</button>
   </section>
 
-  <section class="panel">
-    <div class="panel-title-row"><h2>处理流程</h2><span id="workflowState" class="state-pill">等待照片</span></div>
-    <div class="steps">
-      <div class="step" data-step="photo"><span>1</span><p>读取照片</p></div>
-      <div class="step" data-step="angle"><span>2</span><p>估算倾斜角</p></div>
-      <div class="step" data-step="rows"><span>3</span><p>寻找 32 条横边界</p></div>
-      <div class="step" data-step="cols"><span>4</span><p>寻找右侧竖边界</p></div>
-      <div class="step" data-step="crop"><span>5</span><p>裁出固定 31 行</p></div>
+  <section id="resultPanel" class="panel hidden">
+    <div class="panel-title-row">
+      <h2>拉正后的目标区</h2>
+      <span class="state-pill blue">31 → 61</span>
     </div>
-    <button id="startBtn" class="big-btn" disabled>开始固定模板检测</button>
-    <p id="statusText" class="status">请先拍照或从相册选择一张完整图片。</p>
-  </section>
-
-  <section id="targetPanel" class="panel hidden">
-    <div class="panel-title-row"><h2>固定 31 行目标区</h2><span id="targetStatus" class="state-pill orange">请检查</span></div>
-    <canvas id="targetCanvas" class="result-canvas"></canvas>
-    <p class="hint">这版不再识别“31～61”的文字，而是直接寻找固定的 32 条横边界，并按顺序自动赋值为 31～61。</p>
+    <canvas id="warpedCanvas" class="result-canvas"></canvas>
+    <p class="hint">左侧橙色编号由程序自动生成，第1行对应31，最后一行对应61。</p>
   </section>
 
   <section id="rowsPanel" class="panel hidden">
-    <div class="panel-title-row"><h2>行号映射预览</h2><span class="state-pill blue">31 → 61</span></div>
-    <canvas id="rowsCanvas" class="result-canvas"></canvas>
+    <div class="panel-title-row">
+      <h2>逐行预览</h2>
+      <span id="rowLabel" class="state-pill orange">31</span>
+    </div>
+    <canvas id="rowCanvas" class="result-canvas row-preview"></canvas>
+    <div class="row-actions">
+      <button id="prevRowBtn" class="secondary-btn">上一行</button>
+      <button id="nextRowBtn" class="secondary-btn">下一行</button>
+    </div>
+    <p class="hint">这一版先确认四角点选和逐行切分是否准确，下一版再接入车号与股道识别。</p>
   </section>
 
-  <section id="debugPanel" class="panel hidden">
-    <div class="panel-title-row"><h2>调试信息</h2><span class="state-pill">Debug</span></div>
-    <pre id="debugText" class="debug-box"></pre>
+  <section class="panel">
+    <h2>操作说明</h2>
+    <ol class="instructions">
+      <li>上传完整照片。</li>
+      <li>按顺序点击目标表格四个角：左上、右上、右下、左下。</li>
+      <li>点击“拉正并生成31行”。</li>
+      <li>检查第31行到第61行是否切分正确。</li>
+    </ol>
   </section>
 
-  <footer class="footer"><span>TrainSheet AI · V0.9.4</span></footer>
+  <footer class="footer"><span>TrainSheet AI · V0.9.5</span></footer>
 </main>
 <script src="app.js"></script>
 </body>

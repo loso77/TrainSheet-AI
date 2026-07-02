@@ -1,5 +1,5 @@
-/* TrainSheet AI Version: 0.9.4 */
-const CACHE_NAME="trainsheet-ai-v0-9-4";
+/* TrainSheet AI Version: 0.9.5 */
+const CACHE_NAME="trainsheet-ai-v0-9-5";
 const FILES_TO_CACHE=["./","./index.html","./style.css","./app.js","./manifest.json"];
 self.addEventListener("install",event=>{self.skipWaiting();event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(FILES_TO_CACHE)))});
 self.addEventListener("activate",event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE_NAME).map(key=>caches.delete(key)))));self.clients.claim()});
