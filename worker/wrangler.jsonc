@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "trainsheet-ai-secure",
+"name": "trainsheet-ai",
   "main": "src/worker.js",
   "compatibility_date": "2026-06-01",
 
