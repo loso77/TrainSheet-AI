@@ -13,11 +13,11 @@
 <main class="app-shell">
   <header class="topbar">
     <div>
-      <p class="eyebrow">本地运行 · 人工确认学习版</p>
+      <p class="eyebrow">本地运行 · 放大确认版</p>
       <h1>TrainSheet AI</h1>
       <p class="sub">手写车号识别助手</p>
     </div>
-    <div class="badge">V0.5</div>
+    <div class="badge">V0.6</div>
   </header>
 
   <section class="hero-card">
@@ -27,7 +27,7 @@
     </div>
     <div class="metric">
       <span id="needConfirmCount" class="metric-number">0</span>
-      <span class="metric-label">待人工确认</span>
+      <span class="metric-label">待确认</span>
     </div>
   </section>
 
@@ -48,10 +48,14 @@
 
   <section id="previewCard" class="panel hidden">
     <div class="panel-title-row">
-      <h2>原图预览</h2>
+      <h2>整张照片</h2>
       <button id="clearBtn" class="ghost-btn">清除</button>
     </div>
-    <img id="previewImage" class="preview-image" alt="照片预览">
+    <div class="image-stage">
+      <img id="previewImage" class="preview-image" alt="照片预览">
+      <canvas id="overlayCanvas" class="overlay-canvas"></canvas>
+    </div>
+    <p class="hint">红框会标出当前需要确认的位置。V0.6 暂时用模拟框，后续接入真实表格定位。</p>
   </section>
 
   <section class="panel">
@@ -61,10 +65,9 @@
     </div>
     <div class="steps">
       <div class="step" data-step="photo"><span>1</span><p>读取照片</p></div>
-      <div class="step" data-step="target"><span>2</span><p>建立目标区</p></div>
-      <div class="step" data-step="rows"><span>3</span><p>生成 31 行</p></div>
-      <div class="step" data-step="candidates"><span>4</span><p>生成候选项</p></div>
-      <div class="step" data-step="confirm"><span>5</span><p>人工确认学习</p></div>
+      <div class="step" data-step="target"><span>2</span><p>定位目标区</p></div>
+      <div class="step" data-step="rows"><span>3</span><p>生成待确认格</p></div>
+      <div class="step" data-step="confirm"><span>4</span><p>放大确认</p></div>
     </div>
     <button id="startBtn" class="big-btn" disabled>开始处理</button>
     <p id="statusText" class="status">请先拍照或从相册选择一张完整图片。</p>
@@ -72,26 +75,36 @@
 
   <section id="confirmPanel" class="panel hidden">
     <div class="panel-title-row">
-      <h2>人工确认</h2>
+      <h2>请确认这一格</h2>
       <span id="confirmIndex" class="state-pill orange">0 / 0</span>
     </div>
 
-    <div class="confirm-card">
-      <p class="confirm-title" id="confirmTitle">第 31 行</p>
-      <p class="confirm-sub" id="confirmReason">程序不确定，请确认最终结果。</p>
+    <div class="zoom-card">
+      <p id="confirmTitle" class="confirm-title">当前格</p>
+      <p id="confirmReason" class="confirm-sub">程序不确定，请根据放大图确认。</p>
 
-      <div class="candidate-group">
-        <p class="group-title">车号候选</p>
-        <div id="trainCandidates" class="candidate-row"></div>
-        <input id="manualTrain" class="manual-input" placeholder="车号手动输入，例如 077">
+      <div class="crop-layout">
+        <div class="context-strip muted-strip">上一行参考</div>
+        <canvas id="cellCanvas" class="cell-canvas"></canvas>
+        <div class="context-strip">当前确认位置</div>
+        <div class="context-strip muted-strip">下一行参考</div>
       </div>
+    </div>
 
-      <div class="candidate-group">
-        <p class="group-title">股道候选</p>
-        <div id="trackCandidates" class="candidate-row"></div>
-        <input id="manualTrack" class="manual-input" placeholder="股道手动输入，例如 17东">
-      </div>
+    <div class="candidate-group">
+      <p class="group-title">车号候选</p>
+      <div id="trainCandidates" class="candidate-row"></div>
+      <input id="manualTrain" class="manual-input" inputmode="numeric" placeholder="候选都不对，在这里输入车号，例如 077">
+    </div>
 
+    <div class="candidate-group">
+      <p class="group-title">股道候选</p>
+      <div id="trackCandidates" class="candidate-row"></div>
+      <input id="manualTrack" class="manual-input" placeholder="候选都不对，在这里输入股道，例如 17东">
+    </div>
+
+    <div class="confirm-actions">
+      <button id="prevBtn" class="secondary-btn">上一项</button>
       <button id="confirmBtn" class="big-btn">确认并学习</button>
     </div>
   </section>
@@ -101,7 +114,7 @@
       <h2>学习记忆</h2>
       <button id="clearMemoryBtn" class="ghost-btn danger">清空</button>
     </div>
-    <p class="hint">V0.5 已加入本地学习记忆。每次人工确认都会保存在手机浏览器里，不上传服务器。</p>
+    <p class="hint">每次人工确认都会保存在本机浏览器里，不上传服务器。</p>
     <div id="memoryList" class="memory-list"></div>
   </section>
 
@@ -112,13 +125,13 @@
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>序号</th><th>时间</th><th>股道</th><th>车号</th><th>状态</th></tr></thead>
+        <thead><tr><th>位置</th><th>时间</th><th>股道</th><th>车号</th><th>状态</th></tr></thead>
         <tbody id="resultBody"><tr class="empty-row"><td colspan="5">暂无结果</td></tr></tbody>
       </table>
     </div>
   </section>
 
-  <footer class="footer"><span>TrainSheet AI · V0.5.0</span></footer>
+  <footer class="footer"><span>TrainSheet AI · V0.6.0</span></footer>
 </main>
 <script src="app.js"></script>
 </body>
