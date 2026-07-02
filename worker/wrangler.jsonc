@@ -27,9 +27,9 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_classes": [
-        "UsageGate"
-      ]
+"new_sqlite_classes": [
+  "UsageGate"
+]
     }
   ],
 
