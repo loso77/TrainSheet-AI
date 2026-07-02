@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="theme-color" content="#f5f7fb">
   <title>TrainSheet AI</title>
   <link rel="manifest" href="manifest.json">
@@ -13,16 +14,16 @@
 <main class="app-shell">
   <header class="topbar">
     <div>
-      <p class="eyebrow">本地运行 · 网格分析版</p>
+      <p class="eyebrow">本地 OCR · 印刷编号锚点版</p>
       <h1>TrainSheet AI</h1>
-      <p class="sub">手写车号识别助手</p>
+      <p class="sub">先找连续的 31～61，再锁定目标表格</p>
     </div>
-    <div class="badge">V0.8</div>
+    <div class="badge">V0.9.1</div>
   </header>
 
   <section class="hero-card">
-    <div class="metric"><span id="lineCount" class="metric-number">0</span><span class="metric-label">线条</span></div>
-    <div class="metric"><span id="gridScore" class="metric-number">0</span><span class="metric-label">网格分</span></div>
+    <div class="metric"><span id="anchorCount" class="metric-number">0</span><span class="metric-label">识别锚点</span></div>
+    <div class="metric"><span id="anchorScore" class="metric-number">0</span><span class="metric-label">定位分数</span></div>
   </section>
 
   <section class="action-grid">
@@ -37,42 +38,51 @@
   </section>
 
   <section id="previewCard" class="panel hidden">
-    <div class="panel-title-row">
-      <h2>原图网格分析</h2>
-      <button id="clearBtn" class="ghost-btn">清除</button>
-    </div>
+    <div class="panel-title-row"><h2>原图锚点定位</h2><button id="clearBtn" class="ghost-btn">清除</button></div>
     <div class="image-stage">
       <img id="previewImage" class="preview-image" alt="照片预览">
       <canvas id="overlayCanvas" class="overlay-canvas"></canvas>
     </div>
-    <p class="hint">蓝线=横线候选，绿线=竖线候选，橙框=评分最高的右侧网格。</p>
+    <div class="legend">
+      <span><i class="dot green"></i>识别到的 31～61 编号</span>
+      <span><i class="dot orange"></i>推算出的完整目标区</span>
+    </div>
   </section>
 
   <section class="panel">
     <div class="panel-title-row"><h2>处理流程</h2><span id="workflowState" class="state-pill">等待照片</span></div>
     <div class="steps">
-      <div class="step" data-step="photo"><span>1</span><p>读取照片</p></div>
-      <div class="step" data-step="lines"><span>2</span><p>检测线条</p></div>
-      <div class="step" data-step="cluster"><span>3</span><p>横线聚类</p></div>
-      <div class="step" data-step="score"><span>4</span><p>网格评分</p></div>
-      <div class="step" data-step="crop"><span>5</span><p>裁切候选区</p></div>
+      <div class="step" data-step="photo"><span>1</span><p>读取并增强照片</p></div>
+      <div class="step" data-step="ocr"><span>2</span><p>OCR 印刷数字</p></div>
+      <div class="step" data-step="anchor"><span>3</span><p>寻找连续编号列</p></div>
+      <div class="step" data-step="fit"><span>4</span><p>拟合倾斜方向</p></div>
+      <div class="step" data-step="crop"><span>5</span><p>拉直并裁出目标区</p></div>
     </div>
-    <button id="startBtn" class="big-btn" disabled>开始网格分析</button>
+    <button id="startBtn" class="big-btn" disabled>开始识别编号锚点</button>
+    <div id="progressWrap" class="progress-wrap hidden"><div id="progressBar" class="progress-bar"></div></div>
     <p id="statusText" class="status">请先拍照或从相册选择一张完整图片。</p>
   </section>
 
-  <section id="targetPanel" class="panel hidden">
-    <div class="panel-title-row">
-      <h2>右侧目标区候选</h2>
-      <span id="targetScore" class="state-pill orange">请检查</span>
-    </div>
-    <canvas id="targetCanvas" class="result-canvas"></canvas>
-    <p class="hint">这一版会按“横线等距 + 竖线数量 + 右侧位置”给区域打分。</p>
+  <section id="anchorPanel" class="panel hidden">
+    <div class="panel-title-row"><h2>识别到的编号</h2><span id="rangeBadge" class="state-pill blue">—</span></div>
+    <div id="anchorChips" class="anchor-chips"></div>
+    <p class="hint">允许漏掉少量编号；程序会根据已识别的连续编号推算 31 和 61 的位置。</p>
   </section>
 
-  <section id="rowPanel" class="panel hidden">
-    <div class="panel-title-row"><h2>31 行切分预览</h2><span class="state-pill blue">网格预览</span></div>
-    <canvas id="rowCanvas" class="result-canvas"></canvas>
+  <section id="targetPanel" class="panel hidden">
+    <div class="panel-title-row"><h2>拉直后的目标区</h2><span id="targetBadge" class="state-pill orange">请检查</span></div>
+    <canvas id="targetCanvas" class="result-canvas"></canvas>
+    <p class="hint">重点检查：顶部是否从 31 开始、底部是否到 61、车号和股道两列是否完整。</p>
+  </section>
+
+  <section id="rowsPanel" class="panel hidden">
+    <div class="panel-title-row"><h2>31 行切分预览</h2><span class="state-pill blue">真实裁切</span></div>
+    <canvas id="rowsCanvas" class="result-canvas"></canvas>
+  </section>
+
+  <section id="fallbackPanel" class="panel hidden">
+    <h2>自动定位未通过</h2>
+    <p class="hint">程序没有找到足够可靠的连续编号。它不会乱框，请换一张更清晰的照片，或者等待下一版加入手动点选 31 与 61 的备用方式。</p>
   </section>
 
   <section id="debugPanel" class="panel hidden">
@@ -80,8 +90,9 @@
     <pre id="debugText" class="debug-box"></pre>
   </section>
 
-  <footer class="footer"><span>TrainSheet AI · V0.8.0</span></footer>
+  <footer class="footer"><span>TrainSheet AI · V0.9.1</span></footer>
 </main>
+<script src="tesseract.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
