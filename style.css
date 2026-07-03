@@ -15,3 +15,58 @@
 }
 
 .fixed-time{font-weight:700;color:#344054;background:#f8fafc;white-space:nowrap}
+
+/* V2.4.1：手机端紧凑三列，不横向滚动 */
+.result-card .table-wrap{
+  overflow-x:hidden !important;
+  overflow-y:auto;
+}
+.result-card table{
+  width:100% !important;
+  min-width:0 !important;
+  table-layout:fixed;
+}
+.result-card th,
+.result-card td{
+  padding:7px 4px !important;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.result-card th:nth-child(1),
+.result-card td:nth-child(1){
+  width:31%;
+}
+.result-card th:nth-child(2),
+.result-card td:nth-child(2){
+  width:34%;
+}
+.result-card th:nth-child(3),
+.result-card td:nth-child(3){
+  width:35%;
+}
+.result-card td input{
+  min-width:0 !important;
+  width:100% !important;
+  padding:6px 2px !important;
+  font-size:16px;
+}
+.result-card .confidence{
+  display:none !important;
+}
+@media(max-width:760px){
+  .compare-workspace.has-results{
+    grid-template-columns:43vw 57vw !important;
+  }
+  .compare-workspace.has-results .result-card{
+    padding:8px !important;
+  }
+  .compare-workspace.has-results .result-card h2{
+    font-size:16px;
+  }
+  .compare-workspace.has-results .result-card th,
+  .compare-workspace.has-results .result-card td{
+    font-size:14px;
+    padding:6px 3px !important;
+  }
+}
