@@ -71,7 +71,7 @@
         </table>
       </div>
       <button id="xlsxBtn" class="primary confirm-download">确认无误、保存学习并下载 XLSX</button>
-      <p class="download-hint">点击后保存车号和股道纠错，再按你提供的模板下载“车号、时间、股道”XLSX。时间按表号固定套用，不保存原照片。</p>
+      <p class="download-hint">点击后保存车号和股道纠错，并直接套用你提供的原始 Excel 模板。表头、颜色、边框、列宽、行高和车号前导零都会保留。</p>
       <div class="actions">
         <button id="copyBtn" class="secondary">复制表格</button>
         <button id="csvBtn" class="secondary">导出 CSV</button>
@@ -79,9 +79,9 @@
     </section>
   </div>
 
-  <footer>V2.4.1 · 紧凑三列对照版</footer>
+  <footer>V2.4.3 · 原始模板导出版</footer>
 </main>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
