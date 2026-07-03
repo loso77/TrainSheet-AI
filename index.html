@@ -12,7 +12,7 @@
 <main class="app">
   <header class="hero">
     <div class="logo">🚇</div>
-    <div class="grow"><h1>TrainSheet AI</h1><p>个人安全版 · 股道31—61</p></div>
+    <div class="grow"><h1>TrainSheet AI</h1><p>个人安全版 · 表号31—61</p></div>
     <button id="settingsBtn" class="icon" aria-label="设置">⚙️</button>
   </header>
 
@@ -66,12 +66,12 @@
       <div class="legend"><span>🟨 需确认</span><span>🟩 较确定</span></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>股道</th><th>时间</th><th>车号</th></tr></thead>
+          <thead><tr><th>表号</th><th>时间</th><th>车号</th><th>股道</th></tr></thead>
           <tbody id="resultBody"></tbody>
         </table>
       </div>
       <button id="xlsxBtn" class="primary confirm-download">确认无误、保存学习并下载 XLSX</button>
-      <p class="download-hint">点击后会把本次人工修正保存到 Cloudflare 数据库，再下载只含股道、时间和车号的 XLSX。不会保存原照片。</p>
+      <p class="download-hint">点击后保存车号和股道纠错，再按你提供的模板下载“车号、时间、股道”XLSX。时间按表号固定套用，不保存原照片。</p>
       <div class="actions">
         <button id="copyBtn" class="secondary">复制表格</button>
         <button id="csvBtn" class="secondary">导出 CSV</button>
@@ -79,12 +79,9 @@
     </section>
   </div>
 
-  <footer>V2.3.0 · 云端纠错记忆版</footer>
+  <footer>V2.4.0 · 固定时间与模板导出版</footer>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="app.js"></script>
-  
-  
 </body>
 </html>
-<!-- redeploy v2.3 -->
