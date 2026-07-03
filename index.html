@@ -37,7 +37,7 @@
   <div id="compareWorkspace" class="compare-workspace">
     <section id="mainCard" class="card source-card hidden">
       <div class="section-head source-title">
-        <div><h2>原照片</h2><p class="hint">识别后与结果并排显示，可双指缩放照片。</p></div>
+        <div><h2>原照片</h2><p class="hint">识别后与结果并排显示。左侧照片可独立双指缩放和拖动，右侧表格不会跟着缩放。</p></div>
       </div>
 
       <label class="upload">
@@ -49,6 +49,7 @@
         <div class="photo-stage">
           <img id="preview" alt="车表照片">
         </div>
+        <button id="resetZoomBtn" class="zoom-reset" type="button" aria-label="恢复照片大小">1:1</button>
         <button id="removeImage" class="remove" aria-label="移除">×</button>
       </div>
       <button id="recognizeBtn" class="primary" disabled>开始识别</button>
@@ -79,7 +80,7 @@
     </section>
   </div>
 
-  <footer>V2.4.3 · 原始模板导出版</footer>
+  <footer>V2.4.5 · 左右独立缩放版</footer>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="app.js"></script>

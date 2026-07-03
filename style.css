@@ -70,3 +70,46 @@
     padding:6px 3px !important;
   }
 }
+
+
+/* V2.4.5：左侧照片独立缩放，阻止手势传递到整页 */
+.photo-stage{
+  position:relative;
+  overflow:hidden !important;
+  touch-action:none !important;
+  overscroll-behavior:contain;
+  user-select:none;
+  -webkit-user-select:none;
+  background:#e5e7eb;
+}
+.preview-wrap img#preview{
+  width:100%;
+  min-height:0 !important;
+  height:auto;
+  object-fit:contain;
+  transform-origin:0 0;
+  will-change:transform;
+  pointer-events:none;
+  -webkit-user-drag:none;
+}
+.zoom-reset{
+  position:absolute;
+  left:8px;
+  top:8px;
+  z-index:5;
+  min-width:38px;
+  height:32px;
+  padding:0 8px;
+  border:0;
+  border-radius:10px;
+  background:rgba(16,24,40,.82);
+  color:#fff;
+  font-size:13px;
+  font-weight:700;
+  box-shadow:0 3px 10px rgba(0,0,0,.18);
+}
+.zoom-reset:active{transform:scale(.97)}
+.result-card .table-wrap{
+  touch-action:pan-y !important;
+  overscroll-behavior:contain;
+}
