@@ -1,0 +1,2 @@
+import{json,corsHeaders}from'./_lib/shared.js';
+export async function onRequest({request,env,next}){const{h,ok}=corsHeaders(request,env);if(request.method==='OPTIONS')return new Response(null,{status:204,headers:h});if(!ok)return json({error:'来源不被允许。'},403,h);try{const r=await next(),o=new Response(r.body,r);for(const[k,v]of Object.entries(h))o.headers.set(k,v);o.headers.set('Cache-Control','no-store');return o}catch(e){return json({error:e?.publicMessage||'服务器处理失败。'},e?.status||500,h)}}
