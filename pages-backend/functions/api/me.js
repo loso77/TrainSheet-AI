@@ -4,7 +4,7 @@ export async function onRequestGet({ request, env }) {
   const p = await requireToken(request, env);
   const u = await usageStatus(env.DB, p.sub);
   const memory = await env.DB.prepare(
-    `SELECT COALESCE(SUM(occurrences),0) AS total FROM correction_memory`
+    `SELECT COALESCE(SUM(hit_count),0) AS total FROM correction_memory`
   ).first();
   return json({
     ...u,
