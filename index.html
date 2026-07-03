@@ -18,7 +18,7 @@
 
   <section id="settingsPanel" class="card hidden">
     <div class="section-head"><h2>连接设置</h2><button id="closeSettings" class="link-btn">收起</button></div>
-    <label class="field"><span>Worker 地址</span><input id="workerUrl" type="url" placeholder="https://你的项目.workers.dev"></label>
+    <label class="field"><span>Worker 地址</span><input id="workerUrl" type="url" placeholder="https://你的项目.pages.dev/api"></label>
     <button id="saveWorker" class="secondary">保存并检测</button>
     <div id="connectionState" class="hint">尚未检测。</div>
     <div class="divider"></div>
@@ -34,48 +34,54 @@
     <p id="authStatus" class="status"></p>
   </section>
 
-  <section id="mainCard" class="card hidden">
-    <label class="upload">
-      📷 选择或拍摄车表
-      <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp">
-    </label>
+  <div id="compareWorkspace" class="compare-workspace">
+    <section id="mainCard" class="card source-card hidden">
+      <div class="section-head source-title">
+        <div><h2>原照片</h2><p class="hint">识别后与结果并排显示，可双指缩放照片。</p></div>
+      </div>
 
-    <div id="previewWrap" class="preview-wrap hidden">
-      <img id="preview" alt="车表照片">
-      <button id="removeImage" class="remove" aria-label="移除">×</button>
-    </div>
+      <label class="upload">
+        选择或拍摄车表
+        <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp">
+      </label>
 
-    <details class="notes">
-      <summary>补充说明（可选）</summary>
-      <textarea id="extraNote" maxlength="300" rows="3" placeholder="例如：照片右下角有反光"></textarea>
-    </details>
+      <div id="previewWrap" class="preview-wrap hidden">
+        <div class="photo-stage">
+          <img id="preview" alt="车表照片">
+        </div>
+        <button id="removeImage" class="remove" aria-label="移除">×</button>
+      </div>
+      <button id="recognizeBtn" class="primary" disabled>开始识别</button>
+      <div id="progress" class="progress hidden"><div></div></div>
+      <p id="status" class="status">请选择照片。</p>
+      <p id="quota" class="hint"></p>
+    </section>
 
-    <button id="recognizeBtn" class="primary" disabled>开始识别</button>
-    <div id="progress" class="progress hidden"><div></div></div>
-    <p id="status" class="status">请选择照片。</p>
-    <p id="quota" class="hint"></p>
-  </section>
+    <section id="resultCard" class="card result-card hidden">
+      <div class="section-head">
+        <div><h2>识别结果</h2><p id="summary" class="hint"></p></div>
+        <button id="clearResult" class="link-btn">清空</button>
+      </div>
+      <div class="compare-tip">横屏查看时，原照片和识别结果会并排显示。</div>
+      <div class="legend"><span>🟨 需确认</span><span>🟩 较确定</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>股道</th><th>时间</th><th>车号</th></tr></thead>
+          <tbody id="resultBody"></tbody>
+        </table>
+      </div>
+      <button id="xlsxBtn" class="primary confirm-download">确认无误、保存学习并下载 XLSX</button>
+      <p class="download-hint">点击后会把本次人工修正保存到 Cloudflare 数据库，再下载只含股道、时间和车号的 XLSX。不会保存原照片。</p>
+      <div class="actions">
+        <button id="copyBtn" class="secondary">复制表格</button>
+        <button id="csvBtn" class="secondary">导出 CSV</button>
+      </div>
+    </section>
+  </div>
 
-  <section id="resultCard" class="card hidden">
-    <div class="section-head">
-      <div><h2>识别结果</h2><p id="summary" class="hint"></p></div>
-      <button id="clearResult" class="link-btn">清空</button>
-    </div>
-    <div class="legend"><span>🟨 需确认</span><span>🟩 较确定</span></div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>股道</th><th>时间</th><th>车号</th><th>备注</th></tr></thead>
-        <tbody id="resultBody"></tbody>
-      </table>
-    </div>
-    <div class="actions">
-      <button id="copyBtn" class="secondary">复制表格</button>
-      <button id="csvBtn" class="secondary">导出 CSV</button>
-    </div>
-  </section>
-
-  <footer>V2.0.0 · 图片不在本站落盘保存</footer>
+  <footer>V2.3.0 · 云端纠错记忆版</footer>
 </main>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
