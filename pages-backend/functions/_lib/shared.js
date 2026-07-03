@@ -15,3 +15,26 @@ export async function rateLimit(db,bucket,key,limit,seconds){const now=Math.floo
 export async function usageStatus(db,id){const day=new Date().toISOString().slice(0,10),r=await db.prepare(`SELECT subject,count FROM daily_usage WHERE day=? AND subject IN('__global__',?)`).bind(day,id).all();let global_used=0,device_used=0;for(const x of r.results||[]){if(x.subject==='__global__')global_used=x.count;else device_used=x.count}return{global_used,device_used}}
 export async function consumeDaily(db,id,dl,gl){const day=new Date().toISOString().slice(0,10),g=await db.prepare(`INSERT INTO daily_usage(day,subject,count) VALUES(?,'__global__',1) ON CONFLICT(day,subject) DO UPDATE SET count=count+1 WHERE count<? RETURNING count`).bind(day,gl).first();if(!g)throw publicError('今日服务总额度已用完。',429);const d=await db.prepare(`INSERT INTO daily_usage(day,subject,count) VALUES(?,?,1) ON CONFLICT(day,subject) DO UPDATE SET count=count+1 WHERE count<? RETURNING count`).bind(day,id,dl).first();if(!d){await db.prepare(`UPDATE daily_usage SET count=MAX(count-1,0) WHERE day=? AND subject='__global__'`).bind(day).run();throw publicError('这台设备今日识别次数已用完。',429)}return{global_used:g.count,device_used:d.count}}
 export function normalizeRows(input){const m=new Map();for(const x of Array.isArray(input)?input:[]){const t=Number(x.track);if(t<31||t>61||m.has(t))continue;m.set(t,{track:t,time:String(x.time||'').trim(),train_number:String(x.train_number||'').trim(),note:String(x.note||'').trim(),confidence:Math.max(0,Math.min(1,Number(x.confidence)||0))})}return Array.from({length:31},(_,i)=>m.get(i+31)||{track:i+31,time:'',train_number:'',note:'模型未返回该股道',confidence:0})}
+
+
+export async function getCorrectionExamples(db, limit = 24) {
+  const result = await db.prepare(`
+    SELECT track, field, predicted, corrected, occurrences
+    FROM correction_memory
+    WHERE predicted <> corrected
+    ORDER BY occurrences DESC, updated_at DESC
+    LIMIT ?
+  `).bind(limit).all();
+  return result.results || [];
+}
+
+export function correctionExamplesPrompt(examples) {
+  if (!examples?.length) return "暂无历史人工纠错案例。";
+  const lines = examples.map(x => {
+    const label = x.field === "time" ? "时间" : "车号";
+    const before = x.predicted === "" ? "（空）" : x.predicted;
+    const after = x.corrected === "" ? "（空）" : x.corrected;
+    return `股道${x.track} ${label}: ${before} → ${after}（已确认${x.occurrences}次）`;
+  });
+  return `以下是用户过去人工核对后确认的纠错案例。它们只用于帮助理解常见字形和格式，不得在图片不支持时生搬硬套：\n${lines.join("\n")}`;
+}
