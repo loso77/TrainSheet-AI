@@ -14,27 +14,63 @@ export function ip(request){return request.headers.get('CF-Connecting-IP')||'unk
 export async function rateLimit(db,bucket,key,limit,seconds){const now=Math.floor(Date.now()/1000),w=Math.floor(now/seconds)*seconds,r=await db.prepare(`INSERT INTO rate_limits(bucket,key_value,window_start,count) VALUES(?,?,?,1) ON CONFLICT(bucket,key_value,window_start) DO UPDATE SET count=count+1 WHERE count<? RETURNING count`).bind(bucket,key,w,limit).first();return !!r}
 export async function usageStatus(db,id){const day=new Date().toISOString().slice(0,10),r=await db.prepare(`SELECT subject,count FROM daily_usage WHERE day=? AND subject IN('__global__',?)`).bind(day,id).all();let global_used=0,device_used=0;for(const x of r.results||[]){if(x.subject==='__global__')global_used=x.count;else device_used=x.count}return{global_used,device_used}}
 export async function consumeDaily(db,id,dl,gl){const day=new Date().toISOString().slice(0,10),g=await db.prepare(`INSERT INTO daily_usage(day,subject,count) VALUES(?,'__global__',1) ON CONFLICT(day,subject) DO UPDATE SET count=count+1 WHERE count<? RETURNING count`).bind(day,gl).first();if(!g)throw publicError('今日服务总额度已用完。',429);const d=await db.prepare(`INSERT INTO daily_usage(day,subject,count) VALUES(?,?,1) ON CONFLICT(day,subject) DO UPDATE SET count=count+1 WHERE count<? RETURNING count`).bind(day,id,dl).first();if(!d){await db.prepare(`UPDATE daily_usage SET count=MAX(count-1,0) WHERE day=? AND subject='__global__'`).bind(day).run();throw publicError('这台设备今日识别次数已用完。',429)}return{global_used:g.count,device_used:d.count}}
-export function normalizeRows(input){const m=new Map();for(const x of Array.isArray(input)?input:[]){const t=Number(x.track);if(t<31||t>61||m.has(t))continue;m.set(t,{track:t,time:String(x.time||'').trim(),train_number:String(x.train_number||'').trim(),note:String(x.note||'').trim(),confidence:Math.max(0,Math.min(1,Number(x.confidence)||0))})}return Array.from({length:31},(_,i)=>m.get(i+31)||{track:i+31,time:'',train_number:'',note:'模型未返回该股道',confidence:0})}
+export const FIXED_TIMES = [
+  '4:21','4:46','4:50','4:52','5:00','5:08','5:10','5:16','5:18','5:38',
+  '5:47','5:51','5:55','5:59','6:05','6:09','6:13','6:19','6:23','6:27',
+  '6:31','6:35','6:39','6:43','6:47','6:51','6:55','7:00','7:05','7:17','7:35'
+];
 
+export function normalizeTrackName(value){
+  let s=String(value??'').trim().toUpperCase();
+  s=s.replace(/[→➡➜➝]/g,'').replace(/-?>/g,'').replace(/\s+/g,'');
+  s=s.replace(/[，。,.；;:：]/g,'');
+  const chinese=s.match(/^(\d{1,2})(东|西)$/);
+  if(chinese)return chinese[1]+chinese[2];
+  const code=s.match(/^(\d{1,2})(A|C)$/);
+  if(code)return code[1]+(code[2]==='A'?'东':'西');
+  return s;
+}
+
+export function normalizeRows(input){
+  const m=new Map();
+  for(const x of Array.isArray(input)?input:[]){
+    const tableNo=Number(x.table_no);
+    if(tableNo<31||tableNo>61||m.has(tableNo))continue;
+    const idx=tableNo-31;
+    m.set(tableNo,{
+      table_no:tableNo,
+      time:FIXED_TIMES[idx],
+      train_number:String(x.train_number??'').trim(),
+      track_name:normalizeTrackName(x.track_name),
+      note:String(x.note??'').trim(),
+      confidence:Math.max(0,Math.min(1,Number(x.confidence)||0))
+    });
+  }
+  return Array.from({length:31},(_,i)=>m.get(i+31)||{
+    table_no:i+31,time:FIXED_TIMES[i],train_number:'',track_name:'',
+    note:'模型未返回该表号',confidence:0
+  });
+}
 
 export async function getCorrectionExamples(db, limit = 24) {
   const result = await db.prepare(`
-    SELECT track, field, predicted, corrected, occurrences
+    SELECT track, field_type, original_value, corrected_value, hit_count
     FROM correction_memory
-    WHERE predicted <> corrected
-    ORDER BY occurrences DESC, updated_at DESC
+    WHERE original_value <> corrected_value
+      AND field_type IN ('train_number','track_name')
+    ORDER BY hit_count DESC, updated_at DESC
     LIMIT ?
   `).bind(limit).all();
   return result.results || [];
 }
 
 export function correctionExamplesPrompt(examples) {
-  if (!examples?.length) return "暂无历史人工纠错案例。";
+  if (!examples?.length) return '暂无历史人工纠错案例。';
   const lines = examples.map(x => {
-    const label = x.field === "time" ? "时间" : "车号";
-    const before = x.predicted === "" ? "（空）" : x.predicted;
-    const after = x.corrected === "" ? "（空）" : x.corrected;
-    return `股道${x.track} ${label}: ${before} → ${after}（已确认${x.occurrences}次）`;
+    const label = x.field_type === 'track_name' ? '股道' : '车号';
+    const before = x.original_value === '' ? '（空）' : x.original_value;
+    const after = x.corrected_value === '' ? '（空）' : x.corrected_value;
+    return `表号${x.track} ${label}: ${before} → ${after}（已确认${x.hit_count}次）`;
   });
-  return `以下是用户过去人工核对后确认的纠错案例。它们只用于帮助理解常见字形和格式，不得在图片不支持时生搬硬套：\n${lines.join("\n")}`;
+  return `以下是用户过去人工核对后确认的纠错案例。只用于理解常见字形，不得脱离照片生搬硬套：\n${lines.join('\n')}`;
 }
