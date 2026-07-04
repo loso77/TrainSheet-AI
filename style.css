@@ -113,3 +113,8 @@
   touch-action:pan-y !important;
   overscroll-behavior:contain;
 }
+/* V2.5.0：涂改与冲突风险提示 */
+tr.high-risk{background:#ffe4e6!important}
+.row-alert{display:block;font-size:9px;line-height:1.1;color:#b42318;font-weight:800;margin-top:2px}
+.review td:first-child{color:#7a2e0e}
+.high-risk td:first-child{color:#9f1239}
