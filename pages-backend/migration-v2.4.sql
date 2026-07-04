@@ -1,0 +1,3 @@
+-- V2.4 使用现有 correction_memory 表。字段含义：
+-- track 保存表号31-61；field_type仅使用 train_number / track_name。
+-- 无需新增数据库表。
