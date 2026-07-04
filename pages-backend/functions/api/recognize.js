@@ -56,6 +56,10 @@ export async function onRequestPost({ request, env }) {
 
 识别完31行后，在内部复核：车号范围、重复车号、重复股道。发现冲突时不要擅自用缺失值替换，只降低置信度并在note中说明。
 
+只返回JSON对象，不要使用Markdown代码块。格式必须是：
+{"rows":[{"table_no":31,"train_number":"","track_name":"","old_train_number":"","old_track_name":"","train_modified":false,"track_modified":false,"ambiguity":true,"note":"","confidence":0.0}]}
+rows必须包含31至61共31行，每个字段都必须存在。
+
 ${memoryPrompt}`;
 
   const r = await fetch(env.OPENAI_API_URL || 'https://api.openai.com/v1/chat/completions', {
@@ -64,47 +68,35 @@ ${memoryPrompt}`;
     body: JSON.stringify({
       model: env.OPENAI_MODEL || 'gpt-4.1-mini',
       temperature: 0,
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'train_sheet_final_values', strict: true,
-          schema: {
-            type: 'object', additionalProperties: false, required: ['rows'],
-            properties: { rows: {
-              type: 'array', minItems: 31, maxItems: 31,
-              items: {
-                type: 'object', additionalProperties: false,
-                required: ['table_no','train_number','track_name','old_train_number','old_track_name','train_modified','track_modified','ambiguity','note','confidence'],
-                properties: {
-                  table_no: { type: 'integer', minimum: 31, maximum: 61 },
-                  train_number: { type: 'string' },
-                  track_name: { type: 'string' },
-                  old_train_number: { type: 'string' },
-                  old_track_name: { type: 'string' },
-                  train_modified: { type: 'boolean' },
-                  track_modified: { type: 'boolean' },
-                  ambiguity: { type: 'boolean' },
-                  note: { type: 'string' },
-                  confidence: { type: 'number', minimum: 0, maximum: 1 }
-                }
-              }
-            }}
-          }
-        }
-      },
+      response_format: { type: 'json_object' },
       messages: [{ role: 'user', content: [
+
         { type: 'text', text: prompt },
         { type: 'image_url', image_url: { url: body.image, detail: 'high' } }
       ]}]
     })
   });
 
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw publicError(data?.error?.message ? '大模型接口错误：'+data.error.message : '大模型接口调用失败。', 502);
-  const text = data?.choices?.[0]?.message?.content;
-  if (typeof text !== 'string') throw publicError('大模型没有返回可解析结果。', 502);
+  const rawText = await r.text();
+  let data = {};
+  try { data = JSON.parse(rawText); } catch {}
+  if (!r.ok) {
+    const detail = data?.error?.message || data?.message || rawText || `HTTP ${r.status}`;
+    throw publicError('大模型接口错误：' + String(detail).slice(0, 500), 502);
+  }
+  let modelText = data?.choices?.[0]?.message?.content;
+  if (Array.isArray(modelText)) {
+    modelText = modelText.map(x => typeof x === 'string' ? x : (x?.text || '')).join('');
+  }
+  if (typeof modelText !== 'string') {
+    modelText = data?.output_text || data?.text;
+  }
+  if (typeof modelText !== 'string') throw publicError('大模型没有返回可解析结果。', 502);
+  modelText = modelText.trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
   let parsed;
-  try { parsed = JSON.parse(text); } catch { throw publicError('大模型返回的 JSON 无效。', 502); }
+  try { parsed = JSON.parse(modelText); } catch {
+    throw publicError('大模型返回的 JSON 无效：' + modelText.slice(0, 240), 502);
+  }
 
   return json({
     rows: normalizeRows(parsed.rows),
