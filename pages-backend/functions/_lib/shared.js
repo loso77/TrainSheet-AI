@@ -101,15 +101,31 @@ export function normalizeRows(input){
 }
 
 export async function getCorrectionExamples(db, limit = 24) {
-  const result = await db.prepare(`
-    SELECT track, field_type, original_value, corrected_value, hit_count
-    FROM correction_memory
-    WHERE original_value <> corrected_value
-      AND field_type IN ('train_number','track_name')
-    ORDER BY hit_count DESC, updated_at DESC
-    LIMIT ?
-  `).bind(limit).all();
-  return result.results || [];
+  try {
+    const result = await db.prepare(`
+      SELECT track, field_type, original_value, corrected_value, hit_count
+      FROM correction_memory
+      WHERE original_value <> corrected_value
+        AND field_type IN ('train_number','track_name')
+      ORDER BY hit_count DESC, updated_at DESC
+      LIMIT ?
+    `).bind(limit).all();
+    return result.results || [];
+  } catch (_) {
+    try {
+      const legacy = await db.prepare(`
+        SELECT track, field AS field_type, predicted AS original_value,
+               corrected AS corrected_value, occurrences AS hit_count
+        FROM correction_memory
+        WHERE predicted <> corrected
+        ORDER BY occurrences DESC, updated_at DESC
+        LIMIT ?
+      `).bind(limit).all();
+      return legacy.results || [];
+    } catch (_) {
+      return [];
+    }
+  }
 }
 
 export function correctionExamplesPrompt(examples) {
