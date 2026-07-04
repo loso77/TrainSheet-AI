@@ -31,6 +31,13 @@ export function normalizeTrackName(value){
   return s;
 }
 
+export function normalizeTrainNumber(value){
+  const raw=String(value??'').trim();
+  if(!raw)return '';
+  if(!/^\d{1,3}$/.test(raw))return raw;
+  return raw.padStart(3,'0');
+}
+
 export function normalizeRows(input){
   const m=new Map();
   for(const x of Array.isArray(input)?input:[]){
@@ -40,16 +47,57 @@ export function normalizeRows(input){
     m.set(tableNo,{
       table_no:tableNo,
       time:FIXED_TIMES[idx],
-      train_number:String(x.train_number??'').trim(),
+      train_number:normalizeTrainNumber(x.train_number),
       track_name:normalizeTrackName(x.track_name),
+      old_train_number:normalizeTrainNumber(x.old_train_number),
+      old_track_name:normalizeTrackName(x.old_track_name),
+      train_modified:Boolean(x.train_modified),
+      track_modified:Boolean(x.track_modified),
+      ambiguity:Boolean(x.ambiguity),
       note:String(x.note??'').trim(),
-      confidence:Math.max(0,Math.min(1,Number(x.confidence)||0))
+      confidence:Math.max(0,Math.min(1,Number(x.confidence)||0)),
+      needs_review:false,
+      review_reasons:[]
     });
   }
-  return Array.from({length:31},(_,i)=>m.get(i+31)||{
-    table_no:i+31,time:FIXED_TIMES[i],train_number:'',track_name:'',
-    note:'模型未返回该表号',confidence:0
+  const rows=Array.from({length:31},(_,i)=>m.get(i+31)||{
+    table_no:i+31,time:FIXED_TIMES[i],train_number:'',track_name:'',old_train_number:'',old_track_name:'',
+    train_modified:false,track_modified:false,ambiguity:true,
+    note:'模型未返回该表号',confidence:0,needs_review:true,review_reasons:['模型未返回该表号']
   });
+
+  const trainMap=new Map(),trackMap=new Map();
+  for(const r of rows){
+    const reasons=[];
+    const n=Number(r.train_number);
+    if(!r.train_number)reasons.push('车号为空');
+    else if(!/^\d{3}$/.test(r.train_number)||n<1||n>112)reasons.push('车号不在001—112范围内');
+    if(!r.track_name)reasons.push('股道为空');
+    if(r.train_modified)reasons.push('车号存在划掉或重写');
+    if(r.track_modified)reasons.push('股道存在划掉或重写');
+    if(r.ambiguity)reasons.push('模型认为最终值仍不确定');
+    if(r.confidence<0.88)reasons.push('最终值置信度不足');
+    r.review_reasons=reasons;
+    if(/^\d{3}$/.test(r.train_number)&&n>=1&&n<=112){
+      if(!trainMap.has(r.train_number))trainMap.set(r.train_number,[]);
+      trainMap.get(r.train_number).push(r);
+    }
+    if(r.track_name){
+      if(!trackMap.has(r.track_name))trackMap.set(r.track_name,[]);
+      trackMap.get(r.track_name).push(r);
+    }
+  }
+  for(const [value,list] of trainMap){if(list.length>1)for(const r of list)r.review_reasons.push(`车号${value}重复`)}
+  for(const [value,list] of trackMap){if(list.length>1)for(const r of list)r.review_reasons.push(`股道${value}重复`)}
+  for(const r of rows){
+    r.review_reasons=[...new Set(r.review_reasons)];
+    r.needs_review=r.review_reasons.length>0;
+    if(r.review_reasons.length){
+      const extra=r.review_reasons.join('；');
+      r.note=r.note?`${r.note}；${extra}`:extra;
+    }
+  }
+  return rows;
 }
 
 export async function getCorrectionExamples(db, limit = 24) {
@@ -70,7 +118,7 @@ export function correctionExamplesPrompt(examples) {
     const label = x.field_type === 'track_name' ? '股道' : '车号';
     const before = x.original_value === '' ? '（空）' : x.original_value;
     const after = x.corrected_value === '' ? '（空）' : x.corrected_value;
-    return `表号${x.track} ${label}: ${before} → ${after}（已确认${x.hit_count}次）`;
+    return `${label}: 模型曾识别为${before}，人工最终确认${after}（累计${x.hit_count}次）`;
   });
-  return `以下是用户过去人工核对后确认的纠错案例。只用于理解常见字形，不得脱离照片生搬硬套：\n${lines.join('\n')}`;
+  return `以下是历史人工纠错摘要。它们只能帮助理解常见误读与修改语义，绝不代表表号与答案固定对应：\n${lines.join('\n')}`;
 }
