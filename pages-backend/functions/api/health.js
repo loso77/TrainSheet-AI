@@ -1,1 +1,4 @@
-import{json}from'../_lib/shared.js';export async function onRequestGet({env}){return json({ok:!!(env.DB&&env.OPENAI_API_KEY&&env.DEVICE_ACCESS_CODE&&env.TOKEN_SECRET),version:'2.3.0-learning'})}
+import { json } from '../_lib/shared.js';
+export async function onRequestGet({ env }) {
+  return json({ ok: true, version: '2.5.0-edit-aware', database: !!env.DB, model: env.OPENAI_MODEL || 'default' });
+}

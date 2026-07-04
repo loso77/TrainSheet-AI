@@ -23,19 +23,38 @@ export async function onRequestPost({ request, env }) {
   const dl = num(env.DEVICE_DAILY_LIMIT, 30);
   const gl = num(env.GLOBAL_DAILY_LIMIT, 50);
   const used = await consumeDaily(env.DB, p.sub, dl, gl);
-  const examples = await getCorrectionExamples(env.DB, 24);
+  const examples = await getCorrectionExamples(env.DB, 32);
   const memoryPrompt = correctionExamplesPrompt(examples);
 
-  const prompt = `你是轨道交通手写车表识别助手。请严格按照片中的表格行识别。
+  const prompt = `你是轨道交通手写车表识别助手。任务不是只做OCR，而是判断每一行当前仍然有效的最终内容。
 
-关键定义：
-1. 照片最左侧印刷的31至61是“表号”，不是股道。必须把它输出为table_no，用来定位行。
-2. 表号右侧常有一列只写1或2，这是无关列，必须忽略，绝不能当作时间、车号或股道。
-3. 手写三位数字所在列是“车号”，输出train_number。
-4. 最右侧手写内容才是“股道”，例如17A→、6C、11C。输出track_name。
-5. 不要识别时间。时间由服务器按表号固定套用。
-6. A代表东，C代表西；箭头只是附加笔迹。你可以保持照片原写法，服务器会统一转换。
-7. 看不清必须留空，不得猜测。表号31至61每个必须恰好出现一次。
+固定业务事实（只有这些可以作为硬规则）：
+1. 最左侧印刷表号固定为31至61，每个表号恰好一行；表号不是股道。
+2. 每个表号对应时间固定，服务器负责填写，你不要识别时间。
+3. 车号只能是001至112的三位数字；同一张表内车号绝不重复。
+4. 同一张表内股道绝不重复。
+5. 表号右侧可能有一列只写1或2，这是无关列，必须忽略。
+6. A代表东，C代表西；箭头不是股道内容。
+7. 除上述事实外，不得假设某个表号固定对应某个车号或股道。车号和股道每天都会变化。
+
+编辑动作语义（必须严格执行）：
+- 被横线、斜线或明显涂抹划掉的内容，等同于“删除”，绝不能作为最终值。
+- 在被删除内容旁边、上方或下方重新写的未划掉内容，等同于“新增”，应作为新的候选值。
+- 若新增内容后来又被划掉，它也已删除；多次修改时，仅最后一个未被划掉且能看清的值有效。
+- 红笔不天然等于正确，但红笔划掉旧值、并用红笔写出未划掉新值时，要理解为一次修改。
+- 不得因为旧值更工整、更居中就忽略旁写新值。
+- 同一格出现旧值、新值、红黑混写、覆盖或多组数字时，必须标记modified=true。
+- 无法明确判断最后有效值时，必须ambiguity=true并说明候选，绝不可以假装确定。
+
+逐行输出要求：
+- train_number和track_name填写你判断的最终有效值；看不清可留空。
+- old_train_number/old_track_name填写能看清且已被划掉的旧值，没有则留空。
+- train_modified/track_modified表示该字段是否存在划掉、重写或覆盖。
+- ambiguity表示最终值是否仍有实质不确定性。
+- note必须简短说明修改关系或不确定原因，例如“055被划掉，旁写044未划掉”。普通清晰行可留空。
+- confidence只反映你对“最终有效值”的把握，不是对旧值OCR的把握。存在明显修改时，即使看懂，也不得轻率给1.0。
+
+识别完31行后，在内部复核：车号范围、重复车号、重复股道。发现冲突时不要擅自用缺失值替换，只降低置信度并在note中说明。
 
 ${memoryPrompt}`;
 
@@ -48,18 +67,23 @@ ${memoryPrompt}`;
       response_format: {
         type: 'json_schema',
         json_schema: {
-          name: 'train_sheet_by_table_number', strict: true,
+          name: 'train_sheet_final_values', strict: true,
           schema: {
             type: 'object', additionalProperties: false, required: ['rows'],
             properties: { rows: {
               type: 'array', minItems: 31, maxItems: 31,
               items: {
                 type: 'object', additionalProperties: false,
-                required: ['table_no','train_number','track_name','note','confidence'],
+                required: ['table_no','train_number','track_name','old_train_number','old_track_name','train_modified','track_modified','ambiguity','note','confidence'],
                 properties: {
                   table_no: { type: 'integer', minimum: 31, maximum: 61 },
                   train_number: { type: 'string' },
                   track_name: { type: 'string' },
+                  old_train_number: { type: 'string' },
+                  old_track_name: { type: 'string' },
+                  train_modified: { type: 'boolean' },
+                  track_modified: { type: 'boolean' },
+                  ambiguity: { type: 'boolean' },
                   note: { type: 'string' },
                   confidence: { type: 'number', minimum: 0, maximum: 1 }
                 }
