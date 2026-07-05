@@ -12,7 +12,7 @@
 <main class="app">
   <header class="hero">
     <div class="logo">🚇</div>
-    <div class="grow"><h1>TrainSheet AI</h1><p>个人安全版 · 固定时刻表</p></div>
+    <div class="grow"><h1>TrainSheet AI</h1><p>个人安全版 · 动态表号与时间配置</p></div>
     <button id="settingsBtn" class="icon" aria-label="设置">⚙️</button>
   </header>
 
@@ -22,8 +22,25 @@
     <button id="saveWorker" class="secondary">保存并检测</button>
     <div id="connectionState" class="hint">尚未检测。</div>
     <div class="divider"></div>
+    <div class="section-head config-title"><div><h2>车表配置中心</h2><p class="hint">表号、时间和车号范围可以调整；“同一张表内车号、股道不可重复”始终强制执行。</p></div></div>
+    <div class="config-grid">
+      <label class="field"><span>车号最小值</span><input id="trainMin" type="number" min="0" max="999" inputmode="numeric"></label>
+      <label class="field"><span>车号最大值</span><input id="trainMax" type="number" min="0" max="999" inputmode="numeric"></label>
+    </div>
+<div class="permanent-rule">🔒 永久规则：同一张表格内，车号和股道都绝不允许重复。</div>
+    <div class="section-head config-list-head"><div><strong>表号与时间</strong><p id="configCount" class="hint"></p></div><button id="addConfigRow" class="link-btn" type="button">＋增加</button></div>
+    <div class="config-table-wrap">
+      <table class="config-table"><thead><tr><th>表号</th><th>时间</th><th></th></tr></thead><tbody id="configBody"></tbody></table>
+    </div>
+    <div class="config-actions">
+      <button id="sortConfig" class="secondary compact" type="button">按表号排序</button>
+      <button id="restoreConfig" class="secondary compact" type="button">恢复当前默认</button>
+    </div>
+    <button id="saveConfig" class="primary">保存车表配置</button>
+    <p id="configStatus" class="status"></p>
+    <div class="divider"></div>
     <button id="logoutBtn" class="danger-outline">撤销本机授权</button>
-    <p class="hint">网页中不保存大模型 API Key，也不保存设备授权码。</p>
+    <p class="hint">车表配置仅保存在本机浏览器；网页中不保存大模型 API Key，也不保存设备授权码。</p>
   </section>
 
   <section id="authCard" class="card">
@@ -70,7 +87,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>时间</th><th>车号</th><th>股道</th></tr></thead>
+          <thead><tr><th>表号</th><th>时间</th><th>车号</th><th>股道</th></tr></thead>
           <tbody id="resultBody"></tbody>
         </table>
       </div>
@@ -83,7 +100,7 @@
     </section>
   </div>
 
-  <footer>V2.5.2 · 全表人工编辑版</footer>
+  <footer>V2.5.4 · 双重唯一性永久规则</footer>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="app.js"></script>
