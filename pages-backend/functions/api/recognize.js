@@ -1,6 +1,6 @@
 import {
   json, readJson, requireToken, rateLimit, consumeDaily,
-  ip, num, normalizeRows, publicError,
+  ip, num, normalizeRows, parseSheetConfig, publicError,
   getCorrectionExamples, correctionExamplesPrompt
 } from '../_lib/shared.js';
 
@@ -20,22 +20,26 @@ export async function onRequestPost({ request, env }) {
   }
   if (body.image.length > max) throw publicError('压缩后的图片过大。', 413);
 
+  const config = parseSheetConfig(body.config);
   const dl = num(env.DEVICE_DAILY_LIMIT, 30);
   const gl = num(env.GLOBAL_DAILY_LIMIT, 50);
   const used = await consumeDaily(env.DB, p.sub, dl, gl);
   const examples = await getCorrectionExamples(env.DB, 32);
   const memoryPrompt = correctionExamplesPrompt(examples);
 
+  const tableList=config.entries.map(x=>x.table_no).join('、');
+  const firstTable=config.entries[0].table_no;
+  const trainMin=String(config.train_number.min).padStart(3,'0'),trainMax=String(config.train_number.max).padStart(3,'0');
   const prompt = `你是轨道交通手写车表识别助手。任务不是只做OCR，而是判断每一行当前仍然有效的最终内容。
 
-固定业务事实（只有这些可以作为硬规则）：
-1. 最左侧印刷表号固定为31至61，每个表号恰好一行；表号不是股道。
-2. 每个表号对应时间固定，服务器负责填写，你不要识别时间。
-3. 车号只能是001至112的三位数字；同一张表内车号绝不重复。
-4. 同一张表内股道绝不重复。
+本次车表配置（只对本次请求生效）：
+1. 需要识别的表号共${config.entries.length}个，依次为：${tableList}。表号不是股道。
+2. 时间由服务器根据当前配置填写，你不要识别时间。
+3. 车号有效范围是${trainMin}至${trainMax}；同一张表内车号绝不允许重复。
+4. 永久硬规则：同一张表内车号和股道都绝不允许重复。
 5. 表号右侧可能有一列只写1或2，这是无关列，必须忽略。
 6. A代表东，C代表西；箭头不是股道内容。
-7. 除上述事实外，不得假设某个表号固定对应某个车号或股道。车号和股道每天都会变化。
+7. 除上述规则外，不得假设某个表号固定对应某个车号或股道。
 
 编辑动作语义（必须严格执行）：
 - 被横线、斜线或明显涂抹划掉的内容，等同于“删除”，绝不能作为最终值。
@@ -51,14 +55,14 @@ export async function onRequestPost({ request, env }) {
 - old_train_number/old_track_name填写能看清且已被划掉的旧值，没有则留空。
 - train_modified/track_modified表示该字段是否存在划掉、重写或覆盖。
 - ambiguity表示最终值是否仍有实质不确定性。
-- note必须简短说明修改关系或不确定原因，例如“055被划掉，旁写044未划掉”。普通清晰行可留空。
-- confidence只反映你对“最终有效值”的把握，不是对旧值OCR的把握。存在明显修改时，即使看懂，也不得轻率给1.0。
+- note必须简短说明修改关系或不确定原因。普通清晰行可留空。
+- confidence只反映你对最终有效值的把握。存在明显修改时不得轻率给1.0。
 
-识别完31行后，在内部复核：车号范围、重复车号、重复股道。发现冲突时不要擅自用缺失值替换，只降低置信度并在note中说明。
+识别后复核车号范围、重复车号、重复股道。发现冲突时不要擅自用缺失值替换，只降低置信度并在note中说明。
 
 只返回JSON对象，不要使用Markdown代码块。格式必须是：
-{"rows":[{"table_no":31,"train_number":"","track_name":"","old_train_number":"","old_track_name":"","train_modified":false,"track_modified":false,"ambiguity":true,"note":"","confidence":0.0}]}
-rows必须包含31至61共31行，每个字段都必须存在。
+{"rows":[{"table_no":${firstTable},"train_number":"","track_name":"","old_train_number":"","old_track_name":"","train_modified":false,"track_modified":false,"ambiguity":true,"note":"","confidence":0.0}]}
+rows必须包含本次配置中的全部${config.entries.length}个表号，且每个字段都必须存在。
 
 ${memoryPrompt}`;
 
@@ -99,7 +103,8 @@ ${memoryPrompt}`;
   }
 
   return json({
-    rows: normalizeRows(parsed.rows),
+    rows: normalizeRows(parsed.rows, config),
+    config_used: config,
     memory_examples_used: examples.length,
     usage: { ...used, global_limit: gl, device_limit: dl, expires_at: p.exp }
   });
