@@ -14,118 +14,63 @@ export function ip(request){return request.headers.get('CF-Connecting-IP')||'unk
 export async function rateLimit(db,bucket,key,limit,seconds){const now=Math.floor(Date.now()/1000),w=Math.floor(now/seconds)*seconds,r=await db.prepare(`INSERT INTO rate_limits(bucket,key_value,window_start,count) VALUES(?,?,?,1) ON CONFLICT(bucket,key_value,window_start) DO UPDATE SET count=count+1 WHERE count<? RETURNING count`).bind(bucket,key,w,limit).first();return !!r}
 export async function usageStatus(db,id){const day=new Date().toISOString().slice(0,10),r=await db.prepare(`SELECT subject,count FROM daily_usage WHERE day=? AND subject IN('__global__',?)`).bind(day,id).all();let global_used=0,device_used=0;for(const x of r.results||[]){if(x.subject==='__global__')global_used=x.count;else device_used=x.count}return{global_used,device_used}}
 export async function consumeDaily(db,id,dl,gl){const day=new Date().toISOString().slice(0,10),g=await db.prepare(`INSERT INTO daily_usage(day,subject,count) VALUES(?,'__global__',1) ON CONFLICT(day,subject) DO UPDATE SET count=count+1 WHERE count<? RETURNING count`).bind(day,gl).first();if(!g)throw publicError('今日服务总额度已用完。',429);const d=await db.prepare(`INSERT INTO daily_usage(day,subject,count) VALUES(?,?,1) ON CONFLICT(day,subject) DO UPDATE SET count=count+1 WHERE count<? RETURNING count`).bind(day,id,dl).first();if(!d){await db.prepare(`UPDATE daily_usage SET count=MAX(count-1,0) WHERE day=? AND subject='__global__'`).bind(day).run();throw publicError('这台设备今日识别次数已用完。',429)}return{global_used:g.count,device_used:d.count}}
-export const FIXED_TIMES = [
-  '4:21','4:46','4:50','4:52','5:00','5:08','5:10','5:16','5:18','5:38',
-  '5:47','5:51','5:55','5:59','6:05','6:09','6:13','6:19','6:23','6:27',
-  '6:31','6:35','6:39','6:43','6:47','6:51','6:55','7:00','7:05','7:17','7:35'
-];
+export const DEFAULT_SHEET_CONFIG = {
+  entries: [
+    {table_no:31,time:'4:21'},{table_no:32,time:'4:46'},{table_no:33,time:'4:50'},{table_no:34,time:'4:52'},
+    {table_no:35,time:'5:00'},{table_no:36,time:'5:08'},{table_no:37,time:'5:10'},{table_no:38,time:'5:16'},
+    {table_no:39,time:'5:18'},{table_no:40,time:'5:38'},{table_no:41,time:'5:47'},{table_no:42,time:'5:51'},
+    {table_no:43,time:'5:55'},{table_no:44,time:'5:59'},{table_no:45,time:'6:05'},{table_no:46,time:'6:09'},
+    {table_no:47,time:'6:13'},{table_no:48,time:'6:19'},{table_no:49,time:'6:23'},{table_no:50,time:'6:27'},
+    {table_no:51,time:'6:31'},{table_no:52,time:'6:35'},{table_no:53,time:'6:39'},{table_no:54,time:'6:43'},
+    {table_no:55,time:'6:47'},{table_no:56,time:'6:51'},{table_no:57,time:'6:55'},{table_no:58,time:'7:00'},
+    {table_no:59,time:'7:05'},{table_no:60,time:'7:17'},{table_no:61,time:'7:35'}
+  ],
+  train_number:{min:1,max:112,unique:true},track_unique:true
+};
+
+export function parseSheetConfig(raw){
+  const source=raw&&typeof raw==='object'?raw:DEFAULT_SHEET_CONFIG,entries=[],seen=new Set();
+  for(const x of Array.isArray(source.entries)?source.entries:[]){
+    const tableNo=Number(x?.table_no),time=String(x?.time??'').trim();
+    if(!Number.isInteger(tableNo)||tableNo<1||tableNo>9999||seen.has(tableNo)||!time)continue;
+    seen.add(tableNo);entries.push({table_no:tableNo,time:time.slice(0,20)});
+    if(entries.length>=100)break;
+  }
+  if(!entries.length)throw publicError('车表配置无效：至少需要一个有效表号和时间。',400);
+  const min=Number(source.train_number?.min),max=Number(source.train_number?.max);
+  if(!Number.isInteger(min)||!Number.isInteger(max)||min<0||max>999||min>max)throw publicError('车号范围配置无效。',400);
+  return {entries,train_number:{min,max,unique:true},track_unique:true};
+}
 
 export function normalizeTrackName(value){
   let s=String(value??'').trim().toUpperCase();
   s=s.replace(/[→➡➜➝]/g,'').replace(/-?>/g,'').replace(/\s+/g,'');
   s=s.replace(/[，。,.；;:：]/g,'');
-  const chinese=s.match(/^(\d{1,2})(东|西)$/);
-  if(chinese)return chinese[1]+chinese[2];
-  const code=s.match(/^(\d{1,2})(A|C)$/);
-  if(code)return code[1]+(code[2]==='A'?'东':'西');
+  const chinese=s.match(/^(\d{1,2})(东|西)$/);if(chinese)return chinese[1]+chinese[2];
+  const code=s.match(/^(\d{1,2})(A|C)$/);if(code)return code[1]+(code[2]==='A'?'东':'西');
   return s;
 }
+export function normalizeTrainNumber(value){const raw=String(value??'').trim();if(!raw)return '';if(!/^\d{1,3}$/.test(raw))return raw;return raw.padStart(3,'0')}
 
-export function normalizeTrainNumber(value){
-  const raw=String(value??'').trim();
-  if(!raw)return '';
-  if(!/^\d{1,3}$/.test(raw))return raw;
-  return raw.padStart(3,'0');
-}
-
-export function normalizeRows(input){
-  const m=new Map();
-  for(const x of Array.isArray(input)?input:[]){
-    const tableNo=Number(x.table_no);
-    if(tableNo<31||tableNo>61||m.has(tableNo))continue;
-    const idx=tableNo-31;
-    m.set(tableNo,{
-      table_no:tableNo,
-      time:FIXED_TIMES[idx],
-      train_number:normalizeTrainNumber(x.train_number),
-      track_name:normalizeTrackName(x.track_name),
-      old_train_number:normalizeTrainNumber(x.old_train_number),
-      old_track_name:normalizeTrackName(x.old_track_name),
-      train_modified:Boolean(x.train_modified),
-      track_modified:Boolean(x.track_modified),
-      ambiguity:Boolean(x.ambiguity),
-      note:String(x.note??'').trim(),
-      confidence:Math.max(0,Math.min(1,Number(x.confidence)||0)),
-      needs_review:false,
-      review_reasons:[]
-    });
-  }
-  const rows=Array.from({length:31},(_,i)=>m.get(i+31)||{
-    table_no:i+31,time:FIXED_TIMES[i],train_number:'',track_name:'',old_train_number:'',old_track_name:'',
-    train_modified:false,track_modified:false,ambiguity:true,
-    note:'模型未返回该表号',confidence:0,needs_review:true,review_reasons:['模型未返回该表号']
-  });
-
-  const trainMap=new Map(),trackMap=new Map();
-  for(const r of rows){
-    const reasons=[];
-    const n=Number(r.train_number);
-    if(!r.train_number)reasons.push('车号为空');
-    else if(!/^\d{3}$/.test(r.train_number)||n<1||n>112)reasons.push('车号不在001—112范围内');
-    if(!r.track_name)reasons.push('股道为空');
-    if(r.train_modified)reasons.push('车号存在划掉或重写');
-    if(r.track_modified)reasons.push('股道存在划掉或重写');
-    if(r.ambiguity)reasons.push('模型认为最终值仍不确定');
-    if(r.confidence<0.88)reasons.push('最终值置信度不足');
-    r.review_reasons=reasons;
-    if(/^\d{3}$/.test(r.train_number)&&n>=1&&n<=112){
-      if(!trainMap.has(r.train_number))trainMap.set(r.train_number,[]);
-      trainMap.get(r.train_number).push(r);
-    }
-    if(r.track_name){
-      if(!trackMap.has(r.track_name))trackMap.set(r.track_name,[]);
-      trackMap.get(r.track_name).push(r);
-    }
-  }
-  for(const [value,list] of trainMap){if(list.length>1)for(const r of list)r.review_reasons.push(`车号${value}重复`)}
-  for(const [value,list] of trackMap){if(list.length>1)for(const r of list)r.review_reasons.push(`股道${value}重复`)}
-  for(const r of rows){
-    r.review_reasons=[...new Set(r.review_reasons)];
-    r.needs_review=r.review_reasons.length>0;
-    if(r.review_reasons.length){
-      const extra=r.review_reasons.join('；');
-      r.note=r.note?`${r.note}；${extra}`:extra;
-    }
-  }
+export function normalizeRows(input,config){
+  const entries=config.entries,allowed=new Set(entries.map(x=>x.table_no)),times=new Map(entries.map(x=>[x.table_no,x.time])),m=new Map();
+  for(const x of Array.isArray(input)?input:[]){const tableNo=Number(x.table_no);if(!allowed.has(tableNo)||m.has(tableNo))continue;m.set(tableNo,{table_no:tableNo,time:times.get(tableNo)||'',train_number:normalizeTrainNumber(x.train_number),track_name:normalizeTrackName(x.track_name),old_train_number:normalizeTrainNumber(x.old_train_number),old_track_name:normalizeTrackName(x.old_track_name),train_modified:Boolean(x.train_modified),track_modified:Boolean(x.track_modified),ambiguity:Boolean(x.ambiguity),note:String(x.note??'').trim(),confidence:Math.max(0,Math.min(1,Number(x.confidence)||0)),needs_review:false,review_reasons:[]})}
+  const rows=entries.map(e=>m.get(e.table_no)||{table_no:e.table_no,time:e.time,train_number:'',track_name:'',old_train_number:'',old_track_name:'',train_modified:false,track_modified:false,ambiguity:true,note:'模型未返回该表号',confidence:0,needs_review:true,review_reasons:['模型未返回该表号']});
+  const trainMap=new Map(),trackMap=new Map(),rule=config.train_number;
+  for(const r of rows){const reasons=[],n=Number(r.train_number);if(!r.train_number)reasons.push('车号为空');else if(!/^\d{3}$/.test(r.train_number)||n<rule.min||n>rule.max)reasons.push(`车号不在${String(rule.min).padStart(3,'0')}—${String(rule.max).padStart(3,'0')}范围内`);if(!r.track_name)reasons.push('股道为空');if(r.train_modified)reasons.push('车号存在划掉或重写');if(r.track_modified)reasons.push('股道存在划掉或重写');if(r.ambiguity)reasons.push('模型认为最终值仍不确定');if(r.confidence<0.88)reasons.push('最终值置信度不足');r.review_reasons=reasons;if(rule.unique&&/^\d{3}$/.test(r.train_number)&&n>=rule.min&&n<=rule.max){if(!trainMap.has(r.train_number))trainMap.set(r.train_number,[]);trainMap.get(r.train_number).push(r)}if(r.track_name){if(!trackMap.has(r.track_name))trackMap.set(r.track_name,[]);trackMap.get(r.track_name).push(r)}}
+  for(const [value,list] of trainMap)if(list.length>1)for(const r of list)r.review_reasons.push(`车号${value}重复`);
+  for(const [value,list] of trackMap)if(list.length>1)for(const r of list)r.review_reasons.push(`股道${value}重复`);
+  for(const r of rows){r.review_reasons=[...new Set(r.review_reasons)];r.needs_review=r.review_reasons.length>0;if(r.review_reasons.length){const extra=r.review_reasons.join('；');r.note=r.note?`${r.note}；${extra}`:extra}}
   return rows;
 }
 
 export async function getCorrectionExamples(db, limit = 24) {
-  try {
-    const result = await db.prepare(`
-      SELECT track, field_type, original_value, corrected_value, hit_count
-      FROM correction_memory
-      WHERE original_value <> corrected_value
-        AND field_type IN ('train_number','track_name')
-      ORDER BY hit_count DESC, updated_at DESC
-      LIMIT ?
-    `).bind(limit).all();
-    return result.results || [];
-  } catch (_) {
-    try {
-      const legacy = await db.prepare(`
-        SELECT track, field AS field_type, predicted AS original_value,
-               corrected AS corrected_value, occurrences AS hit_count
-        FROM correction_memory
-        WHERE predicted <> corrected
-        ORDER BY occurrences DESC, updated_at DESC
-        LIMIT ?
-      `).bind(limit).all();
-      return legacy.results || [];
-    } catch (_) {
-      return [];
-    }
+  const found=[];
+  try{const r=await db.prepare(`SELECT table_no AS track,field_type,original_value,corrected_value,hit_count FROM correction_memory_dynamic WHERE original_value<>corrected_value ORDER BY hit_count DESC,updated_at DESC LIMIT ?`).bind(limit).all();found.push(...(r.results||[]))}catch(_){}
+  if(found.length<limit){
+    try{const r=await db.prepare(`SELECT track,field_type,original_value,corrected_value,hit_count FROM correction_memory WHERE original_value<>corrected_value AND field_type IN ('train_number','track_name') ORDER BY hit_count DESC,updated_at DESC LIMIT ?`).bind(limit-found.length).all();found.push(...(r.results||[]))}catch(_){try{const r=await db.prepare(`SELECT track,field AS field_type,predicted AS original_value,corrected AS corrected_value,occurrences AS hit_count FROM correction_memory WHERE predicted<>corrected ORDER BY occurrences DESC,updated_at DESC LIMIT ?`).bind(limit-found.length).all();found.push(...(r.results||[]))}catch(_){}}
   }
+  return found.slice(0,limit);
 }
 
 export function correctionExamplesPrompt(examples) {
