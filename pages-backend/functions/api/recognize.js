@@ -1,5 +1,5 @@
 import {
-  json, readJson, requireToken, rateLimit, consumeDaily,
+  json, readJson, requireToken, rateLimit, usageStatus, consumeDaily,
   ip, num, normalizeRows, parseSheetConfig, publicError,
   getCorrectionExamples, correctionExamplesPrompt
 } from '../_lib/shared.js';
@@ -23,70 +23,82 @@ export async function onRequestPost({ request, env }) {
   const config = parseSheetConfig(body.config);
   const dl = num(env.DEVICE_DAILY_LIMIT, 30);
   const gl = num(env.GLOBAL_DAILY_LIMIT, 50);
-  const used = await consumeDaily(env.DB, p.sub, dl, gl);
-  const examples = await getCorrectionExamples(env.DB, 32);
+
+  // 只检查额度，不在调用模型前扣次数。
+  const beforeUsage = await usageStatus(env.DB, p.sub);
+  if (beforeUsage.global_used >= gl) throw publicError('今日服务总额度已用完。', 429);
+  if (beforeUsage.device_used >= dl) throw publicError('这台设备今日识别次数已用完。', 429);
+
+  // 减少历史案例数量，降低提示词体积和模型处理压力。
+  const examples = await getCorrectionExamples(env.DB, 12);
   const memoryPrompt = correctionExamplesPrompt(examples);
 
-  const tableList=config.entries.map(x=>x.table_no).join('、');
+  const tableNumbers=config.entries.map(x=>x.table_no);
+  const isContinuous=tableNumbers.every((n,i)=>i===0||n===tableNumbers[i-1]+1);
+  const tableSpec=isContinuous
+    ? `${tableNumbers[0]}至${tableNumbers[tableNumbers.length-1]}（共${tableNumbers.length}个）`
+    : `${tableNumbers.join('、')}（共${tableNumbers.length}个）`;
   const firstTable=config.entries[0].table_no;
   const trainMin=String(config.train_number.min).padStart(3,'0'),trainMax=String(config.train_number.max).padStart(3,'0');
-  const prompt = `你是轨道交通手写车表识别助手。任务不是只做OCR，而是判断每一行当前仍然有效的最终内容。
+  const prompt = `你是轨道交通手写车表识别助手。请识别本次配置中的车号和股道，并判断涂改后的最终有效值。
 
-本次车表配置（只对本次请求生效）：
-1. 需要识别的表号共${config.entries.length}个，依次为：${tableList}。表号不是股道。
-2. 时间由服务器根据当前配置填写，你不要识别时间。
-3. 车号有效范围是${trainMin}至${trainMax}；同一张表内车号绝不允许重复。
-4. 永久硬规则：同一张表内车号和股道都绝不允许重复。
-5. 表号右侧可能有一列只写1或2，这是无关列，必须忽略。
-6. A代表东，C代表西；箭头不是股道内容。
-7. 除上述规则外，不得假设某个表号固定对应某个车号或股道。
+本次表号：${tableSpec}。表号不是股道；时间由服务器填写，不要识别时间。
+车号范围：${trainMin}至${trainMax}。同一张表内车号、股道都绝不允许重复。
+表号右侧可能有无关的1或2列，必须忽略。A=东，C=西，箭头不属于股道。
+不得假设某个表号固定对应某个车号或股道。
 
-编辑动作语义（必须严格执行）：
-- 被横线、斜线或明显涂抹划掉的内容，等同于“删除”，绝不能作为最终值。
-- 在被删除内容旁边、上方或下方重新写的未划掉内容，等同于“新增”，应作为新的候选值。
-- 若新增内容后来又被划掉，它也已删除；多次修改时，仅最后一个未被划掉且能看清的值有效。
-- 红笔不天然等于正确，但红笔划掉旧值、并用红笔写出未划掉新值时，要理解为一次修改。
-- 不得因为旧值更工整、更居中就忽略旁写新值。
-- 同一格出现旧值、新值、红黑混写、覆盖或多组数字时，必须标记modified=true。
-- 无法明确判断最后有效值时，必须ambiguity=true并说明候选，绝不可以假装确定。
+涂改规则：
+- 被横线、斜线或明显涂抹划掉的内容等同删除，不能作为最终值。
+- 旁边、上方或下方新写且未被划掉的内容是新增候选。
+- 多次修改时，只取最后一个未被划掉且能看清的值。
+- 同格出现旧值、新值、覆盖或红黑混写时，对应modified=true。
+- 无法确定最终值时，ambiguity=true，可留空，不能假装确定。
 
-逐行输出要求：
-- train_number和track_name填写你判断的最终有效值；看不清可留空。
-- old_train_number/old_track_name填写能看清且已被划掉的旧值，没有则留空。
-- train_modified/track_modified表示该字段是否存在划掉、重写或覆盖。
-- ambiguity表示最终值是否仍有实质不确定性。
-- note必须简短说明修改关系或不确定原因。普通清晰行可留空。
-- confidence只反映你对最终有效值的把握。存在明显修改时不得轻率给1.0。
-
-识别后复核车号范围、重复车号、重复股道。发现冲突时不要擅自用缺失值替换，只降低置信度并在note中说明。
-
-只返回JSON对象，不要使用Markdown代码块。格式必须是：
+只返回JSON对象，不要Markdown。每个表号必须返回一行，字段必须齐全：
 {"rows":[{"table_no":${firstTable},"train_number":"","track_name":"","old_train_number":"","old_track_name":"","train_modified":false,"track_modified":false,"ambiguity":true,"note":"","confidence":0.0}]}
-rows必须包含本次配置中的全部${config.entries.length}个表号，且每个字段都必须存在。
+
+输出后检查：车号范围、重复车号、重复股道。发现冲突只降低置信度并说明，不要擅自替换。
 
 ${memoryPrompt}`;
 
-  const r = await fetch(env.OPENAI_API_URL || 'https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL || 'gpt-4.1-mini',
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'user', content: [
+  const timeoutMs = Math.max(15000, Math.min(50000, num(env.MODEL_TIMEOUT_MS, 35000)));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort('model-timeout'), timeoutMs);
 
-        { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: body.image, detail: 'high' } }
-      ]}]
-    })
-  });
+  let r;
+  try {
+    r = await fetch(env.OPENAI_API_URL || 'https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: env.OPENAI_MODEL || 'gpt-4.1-mini',
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: body.image, detail: 'high' } }
+        ]}]
+      })
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError' || String(error).includes('model-timeout')) {
+      throw publicError(`大模型响应超过${Math.round(timeoutMs/1000)}秒，本次未计次数，请稍后重试。`, 504);
+    }
+    throw publicError('连接大模型失败，本次未计次数。', 502);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const rawText = await r.text();
   let data = {};
   try { data = JSON.parse(rawText); } catch {}
   if (!r.ok) {
     const detail = data?.error?.message || data?.message || rawText || `HTTP ${r.status}`;
-    throw publicError('大模型接口错误：' + String(detail).slice(0, 500), 502);
+    if (r.status === 429) throw publicError('大模型请求过于频繁或额度受限，本次未计次数。', 429);
+    if (r.status === 503) throw publicError('大模型当前繁忙，本次未计次数，请稍后重试。', 503);
+    if (r.status >= 500) throw publicError(`大模型服务暂时不可用（${r.status}），本次未计次数。`, 503);
+    throw publicError('大模型接口错误：' + String(detail).slice(0, 350) + '；本次未计次数。', 502);
   }
   let modelText = data?.choices?.[0]?.message?.content;
   if (Array.isArray(modelText)) {
@@ -102,10 +114,16 @@ ${memoryPrompt}`;
     throw publicError('大模型返回的 JSON 无效：' + modelText.slice(0, 240), 502);
   }
 
+  const normalizedRows = normalizeRows(parsed.rows, config);
+
+  // 只有成功获得并解析结果后才计数。
+  const used = await consumeDaily(env.DB, p.sub, dl, gl);
+
   return json({
-    rows: normalizeRows(parsed.rows, config),
+    rows: normalizedRows,
     config_used: config,
     memory_examples_used: examples.length,
+    model_timeout_ms: timeoutMs,
     usage: { ...used, global_limit: gl, device_limit: dl, expires_at: p.exp }
   });
 }
