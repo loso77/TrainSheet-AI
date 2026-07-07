@@ -21,27 +21,30 @@ function buildPrompt(config, examples) {
   const firstTable = config.entries[0].table_no;
   const trainMin = String(config.train_number.min).padStart(3, '0');
   const trainMax = String(config.train_number.max).padStart(3, '0');
-  const memoryPrompt = correctionExamplesPrompt(examples);
-  return `你是轨道交通手写车表识别助手。只识别本次车表每个表号对应的“车号”和“股道”。
 
-本次表号：${tableSpec(config.entries)}。表号不是股道；时间由系统填写，不要识别时间。
-车号范围：${trainMin}至${trainMax}。同一张表内车号、股道都绝不允许重复。
-A=东，C=西；箭头不属于股道。表号右侧可能有无关的1或2列，必须忽略。
-不得假设某个表号固定对应某个车号或股道。
+  return `你是车表照片识别助手。请只识别本次表号对应的车号和股道，保持快速、稳定、简洁。
 
-涂改规则：
-- 被横线、斜线或明显涂抹划掉的内容等同删除，不能作为最终值。
-- 旁边、上方或下方新写且未被划掉的内容是新增候选。
-- 多次修改时，只取最后一个未被划掉且能看清的值。
-- 同格出现旧值、新值、覆盖或红黑混写时，对应modified=true。
-- 无法确定最终值时，ambiguity=true，可留空，不能假装确定。
+本次表号：${tableSpec(config.entries)}。
+只识别两项：车号、股道。不要识别时间，时间由系统填写。
+车号范围：${trainMin}至${trainMax}。同一张表内车号不能重复，股道不能重复。
+A=东，C=西，箭头不属于股道。表号右侧的1或2是无关列，必须忽略。
+不要假设某个表号固定对应某个车号或股道。
 
-只返回JSON对象，不要Markdown。每个表号必须返回一行，字段必须齐全：
-{"rows":[{"table_no":${firstTable},"train_number":"","track_name":"","old_train_number":"","old_track_name":"","train_modified":false,"track_modified":false,"ambiguity":true,"note":"","confidence":0.0}]}
+涂改处理采用轻量规则：
+- 明显被划掉的旧值不要作为最终值。
+- 旁边未划掉的新写值优先作为最终值。
+- 如果涂改太复杂、看不清或不敢确定，就把该字段留空，并设置 ambiguity=true。
+- 不需要解释每一处涂改，不要输出长说明。
 
-输出后自查：车号范围、重复车号、重复股道。发现冲突只降低置信度并说明，不要擅自替换。
+只返回JSON对象，不要Markdown。每个表号必须返回一行：
+{"rows":[{"table_no":${firstTable},"train_number":"","track_name":"","ambiguity":false,"confidence":0.0}]}
 
-${memoryPrompt}`;
+字段说明：
+- table_no：表号
+- train_number：三位车号，看不清可留空
+- track_name：如1东、12西，看不清可留空
+- ambiguity：是否不确定
+- confidence：0到1之间的把握程度`;
 }
 
 function getProvider(env) {
@@ -195,9 +198,9 @@ export async function onRequestPost({ request, env }) {
   if (beforeUsage.global_used >= gl) throw publicError('今日服务总额度已用完。', 429);
   if (beforeUsage.device_used >= dl) throw publicError('这台设备今日识别次数已用完。', 429);
 
-  const examples = await getCorrectionExamples(env.DB, 0); // 稳定版先关闭历史案例，排除提示词过重因素。
+  const examples = await getCorrectionExamples(env.DB, 0); // 轻量稳定版关闭历史案例，先保证识别能稳定返回。
   const prompt = buildPrompt(config, examples);
-  const timeoutMs = Math.max(15000, Math.min(55000, num(env.MODEL_TIMEOUT_MS, 45000)));
+  const timeoutMs = Math.max(15000, Math.min(55000, num(env.MODEL_TIMEOUT_MS, 35000)));
 
   const started = Date.now();
   const result = await callModel({ env, prompt, image: body.image, timeoutMs });
