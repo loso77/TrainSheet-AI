@@ -21,30 +21,39 @@ function buildPrompt(config, examples) {
   const firstTable = config.entries[0].table_no;
   const trainMin = String(config.train_number.min).padStart(3, '0');
   const trainMax = String(config.train_number.max).padStart(3, '0');
+  const memoryPrompt = correctionExamplesPrompt(examples);
 
-  return `你是车表照片识别助手。请只识别本次表号对应的车号和股道，保持快速、稳定、简洁。
+  return `你是轨道交通手写车表识别助手。任务不只是OCR，而是判断每一行当前仍然有效的最终内容。
 
 本次表号：${tableSpec(config.entries)}。
-只识别两项：车号、股道。不要识别时间，时间由系统填写。
+表号是每行的定位锚点。即使纸张弯折或表格线倾斜，也要从印刷表号所在行寻找其右侧的车号和股道。
+只识别两项：车号、股道。不要识别时间，时间由系统填写。表号右侧的1或2是无关列，必须忽略。
 车号范围：${trainMin}至${trainMax}。同一张表内车号不能重复，股道不能重复。
-A=东，C=西，箭头不属于股道。表号右侧的1或2是无关列，必须忽略。
+A=东，C=西，箭头不属于股道。
 不要假设某个表号固定对应某个车号或股道。
 
-涂改处理采用轻量规则：
-- 明显被划掉的旧值不要作为最终值。
-- 旁边未划掉的新写值优先作为最终值。
-- 如果涂改太复杂、看不清或不敢确定，就把该字段留空，并设置 ambiguity=true。
-- 不需要解释每一处涂改，不要输出长说明。
+编辑动作语义（必须严格执行）：
+- 被横线、斜线、叉号或明显涂抹划掉的内容等同删除，绝不能作为最终值。
+- 在被删除内容旁边、上方或下方重新写的未划掉内容，是新的候选值；能明确对应同一行时，应作为最终值。
+- 若新增内容后来又被划掉，它也已删除；多次修改时，只取最后一个未被划掉且能看清的值。
+- 红笔或其他颜色不天然代表最终值，判断依据始终是“旧值被划掉、旁边新值未被划掉”。
+- 不得因为旧值更工整、更居中或仍然清晰，就忽略旁边较小、较乱的新写值。
+- 同一格出现旧值、新值、红黑混写、覆盖或多组数字时，对应的 modified 必须为 true。
+- 无法明确判断最后有效值时，ambiguity=true并说明候选；可以留空，不能假装确定。
 
-只返回JSON对象，不要Markdown。每个表号必须返回一行：
-{"rows":[{"table_no":${firstTable},"train_number":"","track_name":"","ambiguity":false,"confidence":0.0}]}
+逐行输出要求：
+- train_number 和 track_name 填写最终有效值。
+- old_train_number 和 old_track_name 填写能看清且已被划掉的旧值，没有则留空。
+- train_modified 和 track_modified 表示该字段是否存在划掉、重写或覆盖。
+- note 简短说明修改关系或不确定原因，例如“055被划掉，旁写044未划掉”；普通清晰行可留空。
+- confidence 只表示对最终有效值的把握，存在明显修改时不得轻率给1.0。
 
-字段说明：
-- table_no：表号
-- train_number：三位车号，看不清可留空
-- track_name：如1东、12西，看不清可留空
-- ambiguity：是否不确定
-- confidence：0到1之间的把握程度`;
+只返回JSON对象，不要Markdown。每个表号必须返回一行且字段齐全：
+{"rows":[{"table_no":${firstTable},"train_number":"","track_name":"","old_train_number":"","old_track_name":"","train_modified":false,"track_modified":false,"ambiguity":true,"note":"","confidence":0.0}]}
+
+输出后复核车号范围、重复车号和重复股道。发现冲突时不要擅自替换，只降低置信度并在note中说明。
+
+${memoryPrompt}`;
 }
 
 function getProvider(env, requested = '') {
@@ -251,7 +260,8 @@ export async function onRequestPost({ request, env }) {
   if (beforeUsage.global_used >= gl) throw publicError('今日服务总额度已用完。', 429);
   if (beforeUsage.device_used >= dl) throw publicError('这台设备今日识别次数已用完。', 429);
 
-  const examples = await getCorrectionExamples(env.DB, 0); // 轻量稳定版关闭历史案例，先保证识别能稳定返回。
+  // 只取少量高频案例，恢复人工纠错记忆，同时控制提示词长度与响应时间。
+  const examples = await getCorrectionExamples(env.DB, 12);
   const prompt = buildPrompt(config, examples);
   const timeoutMs = Math.max(15000, Math.min(55000, num(env.MODEL_TIMEOUT_MS, 35000)));
 
