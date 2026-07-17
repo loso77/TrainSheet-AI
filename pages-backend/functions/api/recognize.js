@@ -1,7 +1,7 @@
 import {
   json, readJson, requireToken, rateLimit, usageStatus, consumeDaily,
   ip, num, normalizeRows, parseSheetConfig, publicError,
-  getCorrectionExamples, correctionExamplesPrompt
+  signToken, verifyToken
 } from '../_lib/shared.js';
 
 function splitDataUrl(dataUrl) {
@@ -17,13 +17,11 @@ function tableSpec(entries) {
   return continuous ? `${nums[0]}至${nums[nums.length - 1]}（共${nums.length}个）` : `${nums.join('、')}（共${nums.length}个）`;
 }
 
-function buildPrompt(config, examples) {
+function buildPrompt(config, review = false) {
   const firstTable = config.entries[0].table_no;
   const trainMin = String(config.train_number.min).padStart(3, '0');
   const trainMax = String(config.train_number.max).padStart(3, '0');
-  const memoryPrompt = correctionExamplesPrompt(examples);
-
-  return `你是轨道交通手写车表识别助手。任务不只是OCR，而是判断每一行当前仍然有效的最终内容。
+  return `你是轨道交通手写车表${review ? '疑难行复核' : '识别'}助手。请直接读取照片，不做解释。
 
 本次表号：${tableSpec(config.entries)}。
 表号是每行的定位锚点。即使纸张弯折或表格线倾斜，也要从印刷表号所在行寻找其右侧的车号和股道。
@@ -32,28 +30,37 @@ function buildPrompt(config, examples) {
 A=东，C=西，箭头不属于股道。
 不要假设某个表号固定对应某个车号或股道。
 
-编辑动作语义（必须严格执行）：
-- 被横线、斜线、叉号或明显涂抹划掉的内容等同删除，绝不能作为最终值。
-- 在被删除内容旁边、上方或下方重新写的未划掉内容，是新的候选值；能明确对应同一行时，应作为最终值。
-- 若新增内容后来又被划掉，它也已删除；多次修改时，只取最后一个未被划掉且能看清的值。
-- 红笔或其他颜色不天然代表最终值，判断依据始终是“旧值被划掉、旁边新值未被划掉”。
-- 不得因为旧值更工整、更居中或仍然清晰，就忽略旁边较小、较乱的新写值。
-- 同一格出现旧值、新值、红黑混写、覆盖或多组数字时，对应的 modified 必须为 true。
-- 无法明确判断最后有效值时，ambiguity=true并说明候选；可以留空，不能假装确定。
+修改规则必须执行：被横线、斜线、叉号或涂抹划掉的旧值无效；同一格旁边、上方或下方未划掉的手写新值才是最终值，不分红笔黑笔。多次修改只取最后一个未划掉值。不要因旧值更工整而选旧值。看不清最终值时留空并把ambiguity设为true，禁止猜测。
 
-逐行输出要求：
-- train_number 和 track_name 填写最终有效值。
-- old_train_number 和 old_track_name 填写能看清且已被划掉的旧值，没有则留空。
-- train_modified 和 track_modified 表示该字段是否存在划掉、重写或覆盖。
-- note 简短说明修改关系或不确定原因，例如“055被划掉，旁写044未划掉”；普通清晰行可留空。
-- confidence 只表示对最终有效值的把握，存在明显修改时不得轻率给1.0。
+只返回紧凑JSON，不要Markdown、字段名解释或备注。每个表号返回一个七项数组：
+[表号,最终车号,最终股道,车号有划改,股道有划改,最终值不确定,置信度]
+例如：{"rows":[[${firstTable},"044","1西",true,false,false,0.93]]}
+每个指定表号必须恰好出现一次。输出前检查范围和重复；冲突时保留看到的值、降低置信度并把不确定设为true。`;
+}
 
-只返回JSON对象，不要Markdown。每个表号必须返回一行且字段齐全：
-{"rows":[{"table_no":${firstTable},"train_number":"","track_name":"","old_train_number":"","old_track_name":"","train_modified":false,"track_modified":false,"ambiguity":true,"note":"","confidence":0.0}]}
+function expandCompactRows(input) {
+  return (Array.isArray(input) ? input : []).map(row => Array.isArray(row) ? {
+    table_no: row[0], train_number: row[1], track_name: row[2],
+    train_modified: Boolean(row[3]), track_modified: Boolean(row[4]),
+    ambiguity: Boolean(row[5]), confidence: row[6],
+    old_train_number: '', old_track_name: '', note: ''
+  } : row);
+}
 
-输出后复核车号范围、重复车号和重复股道。发现冲突时不要擅自替换，只降低置信度并在note中说明。
+async function imageFingerprint(image) {
+  const bytes = new TextEncoder().encode(String(image || ''));
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return [...digest].slice(0, 12).map(x => x.toString(16).padStart(2, '0')).join('');
+}
 
-${memoryPrompt}`;
+function providerConfigured(env, provider) {
+  if (provider === 'doubao') return Boolean(env.DOUBAO_API_KEY);
+  if (provider === 'gemini') return Boolean(env.GEMINI_API_KEY || env.OPENAI_API_KEY);
+  return Boolean(env.OPENAI_API_KEY);
+}
+
+function alternateProvider(provider) {
+  return provider === 'doubao' ? 'gemini' : 'doubao';
 }
 
 function getProvider(env, requested = '') {
@@ -116,7 +123,8 @@ async function callGeminiOfficial({ env, prompt, image, timeoutMs, debugTextOnly
     contents: [{ role: 'user', parts }],
     generationConfig: {
       temperature: 0,
-      response_mime_type: 'application/json'
+      response_mime_type: 'application/json',
+      maxOutputTokens: 2048
     }
   };
 
@@ -158,6 +166,7 @@ async function callOpenAICompatible({ env, prompt, image, timeoutMs, debugTextOn
     body: JSON.stringify({
       model,
       temperature: 0,
+      max_tokens: 2048,
       response_format: { type: 'json_object' },
       messages: [{ role: 'user', content }]
     })
@@ -201,6 +210,7 @@ async function callDoubao({ env, prompt, image, timeoutMs, debugTextOnly = false
     body: JSON.stringify({
       model,
       temperature: 0,
+      max_tokens: 2048,
       // 车表识别是直接提取任务。Doubao Seed 2.1 默认开启深度思考，
       // 会显著增加首字延迟并容易触发 35 秒保护，因此这里明确关闭。
       thinking: { type: 'disabled' },
@@ -237,9 +247,87 @@ async function callModel(args) {
   return await callOpenAICompatible(args);
 }
 
+function parseModelRows(resultText, config) {
+  const modelText = cleanJsonText(resultText);
+  let parsed;
+  try { parsed = JSON.parse(modelText); } catch {
+    throw publicError('大模型返回的 JSON 无效：' + modelText.slice(0, 240) + '；本次未计次数。', 502);
+  }
+  return normalizeRows(expandCompactRows(parsed.rows), config);
+}
+
+function reviewPriority(row) {
+  let score = (1 - row.confidence) * 30;
+  if (!row.train_number || !row.track_name) score += 120;
+  if (row.ambiguity) score += 100;
+  if (row.train_modified || row.track_modified) score += 90;
+  if ((row.review_reasons || []).some(x => x.includes('重复'))) score += 70;
+  return score;
+}
+
+function sameNumbers(a, b) {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+async function handleReview({ request, env, principal, body, max }) {
+  const [ipOk, deviceOk] = await Promise.all([
+    rateLimit(env.DB, 'review-ip', ip(request), 6, 60),
+    rateLimit(env.DB, 'review-device', principal.sub, 3, 60)
+  ]);
+  if (!ipOk || !deviceOk) throw publicError('自动复核请求过于频繁，请稍后再试。', 429);
+
+  splitDataUrl(body.image);
+  if (body.image.length > max) throw publicError('压缩后的图片过大。', 413);
+  const token = await verifyToken(body.review_token, env.TOKEN_SECRET);
+  const now = Math.floor(Date.now() / 1000);
+  if (!token || token.scope !== 'review' || token.sub !== principal.sub || token.exp < now ||
+      token.ver !== String(env.TOKEN_VERSION || '1')) {
+    throw publicError('自动复核凭证无效或已过期，请重新识别。', 401);
+  }
+
+  const provider = String(body.provider || '').toLowerCase().trim();
+  if (provider !== token.reviewer) throw publicError('自动复核模型与凭证不匹配。', 400);
+  const fingerprint = await imageFingerprint(body.image);
+  if (fingerprint !== token.image_hash) throw publicError('自动复核照片与首次识别不一致。', 400);
+
+  const config = parseSheetConfig(body.config);
+  const requested = config.entries.map(x => x.table_no).sort((a, b) => a - b);
+  const permitted = (Array.isArray(token.table_nos) ? token.table_nos : []).map(Number).sort((a, b) => a - b);
+  if (!requested.length || !sameNumbers(requested, permitted)) {
+    throw publicError('自动复核表号范围与凭证不匹配。', 400);
+  }
+
+  const timeoutMs = Math.max(12000, Math.min(40000, num(env.REVIEW_TIMEOUT_MS, 28000)));
+  const started = Date.now();
+  const result = await callModel({ env, provider, prompt: buildPrompt(config, true), image: body.image, timeoutMs });
+  const rows = parseModelRows(result.text, config);
+  const usage = await usageStatus(env.DB, principal.sub);
+  return json({
+    rows,
+    review: true,
+    counted: false,
+    model_provider: result.provider,
+    model_name: result.model,
+    elapsed_ms: Date.now() - started,
+    model_timeout_ms: timeoutMs,
+    usage: {
+      ...usage,
+      global_limit: num(env.GLOBAL_DAILY_LIMIT, 50),
+      device_limit: num(env.DEVICE_DAILY_LIMIT, 30),
+      expires_at: principal.exp
+    }
+  });
+}
+
 export async function onRequestPost({ request, env }) {
   if (!env.DB) throw publicError('D1 数据库尚未绑定。', 503);
   const p = await requireToken(request, env);
+  const max = num(env.MAX_REQUEST_BYTES, 9000000);
+  const body = await readJson(request, max);
+
+  if (String(body.mode || '').toLowerCase() === 'review') {
+    return await handleReview({ request, env, principal: p, body, max });
+  }
 
   const [ipOk, deviceOk] = await Promise.all([
     rateLimit(env.DB, 'recognize-ip', ip(request), 4, 60),
@@ -247,9 +335,7 @@ export async function onRequestPost({ request, env }) {
   ]);
   if (!ipOk || !deviceOk) throw publicError('请求过于频繁，请稍后再试。', 429);
 
-  const max = num(env.MAX_REQUEST_BYTES, 9000000);
-  const body = await readJson(request, max);
-  if (typeof body.image !== 'string') splitDataUrl(body.image);
+  splitDataUrl(body.image);
   if (body.image.length > max) throw publicError('压缩后的图片过大。', 413);
 
   const config = parseSheetConfig(body.config);
@@ -260,34 +346,45 @@ export async function onRequestPost({ request, env }) {
   if (beforeUsage.global_used >= gl) throw publicError('今日服务总额度已用完。', 429);
   if (beforeUsage.device_used >= dl) throw publicError('这台设备今日识别次数已用完。', 429);
 
-  // 只取少量高频案例，恢复人工纠错记忆，同时控制提示词长度与响应时间。
-  const examples = await getCorrectionExamples(env.DB, 12);
-  const prompt = buildPrompt(config, examples);
+  const prompt = buildPrompt(config);
   const timeoutMs = Math.max(15000, Math.min(55000, num(env.MODEL_TIMEOUT_MS, 35000)));
 
   const started = Date.now();
   const provider = String(body.provider || 'default').toLowerCase().trim();
   const result = await callModel({ env, provider, prompt, image: body.image, timeoutMs });
   const elapsed_ms = Date.now() - started;
-
-  const modelText = cleanJsonText(result.text);
-  let parsed;
-  try { parsed = JSON.parse(modelText); } catch {
-    throw publicError('大模型返回的 JSON 无效：' + modelText.slice(0, 240) + '；本次未计次数。', 502);
-  }
-
-  const normalizedRows = normalizeRows(parsed.rows, config);
+  const normalizedRows = parseModelRows(result.text, config);
 
   const used = await consumeDaily(env.DB, p.sub, dl, gl);
+  const primaryProvider = getProvider(env, provider);
+  const reviewer = alternateProvider(primaryProvider);
+  const flagged = normalizedRows.filter(x => x.needs_review).sort((a, b) => reviewPriority(b) - reviewPriority(a));
+  const reviewRows = providerConfigured(env, reviewer) ? flagged.slice(0, 12) : [];
+  let review = null;
+  if (reviewRows.length) {
+    const tableNos = reviewRows.map(x => x.table_no);
+    review = {
+      provider: reviewer,
+      table_nos: tableNos,
+      total_flagged: flagged.length,
+      token: await signToken({
+        scope: 'review', sub: p.sub, reviewer, table_nos: tableNos,
+        image_hash: await imageFingerprint(body.image),
+        ver: String(env.TOKEN_VERSION || '1'),
+        exp: Math.floor(Date.now() / 1000) + 600
+      }, env.TOKEN_SECRET)
+    };
+  }
 
   return json({
     rows: normalizedRows,
     config_used: config,
-    memory_examples_used: examples.length,
+    memory_examples_used: 0,
     model_provider: result.provider,
     model_name: result.model,
     elapsed_ms,
     model_timeout_ms: timeoutMs,
+    review,
     usage: { ...used, global_limit: gl, device_limit: dl, expires_at: p.exp }
   });
 }
