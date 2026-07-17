@@ -192,6 +192,9 @@ async function callDoubao({ env, prompt, image, timeoutMs, debugTextOnly = false
     body: JSON.stringify({
       model,
       temperature: 0,
+      // 车表识别是直接提取任务。Doubao Seed 2.1 默认开启深度思考，
+      // 会显著增加首字延迟并容易触发 35 秒保护，因此这里明确关闭。
+      thinking: { type: 'disabled' },
       response_format: { type: 'json_object' },
       messages: [{ role: 'user', content }]
     })
