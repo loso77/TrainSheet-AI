@@ -3,7 +3,7 @@ export async function onRequestGet({ env }) {
   const doubaoBindings = Object.keys(env || {}).filter((name) => /DOUBAO/i.test(name));
   return json({
     ok: true,
-    version: '2.6.2-doubao-fast-ocr',
+    version: '2.6.3-correction-memory',
     database: !!env.DB,
     model: env.OPENAI_MODEL || env.GEMINI_MODEL || 'default',
     providers: {
