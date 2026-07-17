@@ -11,6 +11,37 @@ export async function onRequestPost({ request, env }) {
   const items = body.corrections.slice(0, 200);
   let saved = 0;
 
+  // 部分旧部署没有手动执行 migration-v2.5.3.sql。首次保存时自动补齐学习表，
+  // 避免识别成功但“确认无误、保存学习”返回服务器处理失败。
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS correction_memory_dynamic (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      table_no INTEGER NOT NULL,
+      field_type TEXT NOT NULL CHECK(field_type IN ('train_number','track_name')),
+      original_value TEXT NOT NULL DEFAULT '',
+      corrected_value TEXT NOT NULL DEFAULT '',
+      hit_count INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(table_no,field_type,original_value,corrected_value)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS recognition_feedback_dynamic (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      table_no INTEGER NOT NULL,
+      field_type TEXT NOT NULL CHECK(field_type IN ('train_number','track_name')),
+      model_value TEXT NOT NULL DEFAULT '',
+      old_value TEXT NOT NULL DEFAULT '',
+      corrected_value TEXT NOT NULL DEFAULT '',
+      modified INTEGER NOT NULL DEFAULT 0,
+      ambiguity INTEGER NOT NULL DEFAULT 0,
+      model_note TEXT NOT NULL DEFAULT '',
+      review_reasons TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
   for (const x of items) {
     const tableNo = Number(x.table_no);
     const fieldType = String(x.field_type || '');
