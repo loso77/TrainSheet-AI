@@ -1,7 +1,7 @@
 import {
   json, readJson, requireToken, rateLimit, usageStatus, consumeDaily,
   ip, num, normalizeRows, parseSheetConfig, publicError,
-  signToken, verifyToken
+  signToken, verifyToken, getCorrectionExamples, correctionExamplesPrompt
 } from '../_lib/shared.js';
 
 function splitDataUrl(dataUrl) {
@@ -23,11 +23,11 @@ function buildPrompt(config, review = false, structuredRows = false) {
   const trainMax = String(config.train_number.max).padStart(3, '0');
   const outputFormat = structuredRows
     ? `只返回紧凑JSON，不要Markdown、字段名解释或备注。每个表号返回一个对象：
-{"rows":[{"n":${firstTable},"c":"044","g":"1西","cm":true,"gm":false,"a":false,"p":0.93}]}
+{"rows":[{"n":${firstTable},"c":"三位最终车号","g":"最终股道","cm":false,"gm":false,"a":false,"p":0.93}]}
 n=表号，c=最终车号，g=最终股道，cm=车号有划改，gm=股道有划改，a=最终值不确定，p=置信度。`
     : `只返回紧凑JSON，不要Markdown、字段名解释或备注。每个表号返回一个七项数组：
 [表号,最终车号,最终股道,车号有划改,股道有划改,最终值不确定,置信度]
-例如：{"rows":[[${firstTable},"044","1西",true,false,false,0.93]]}`;
+例如：{"rows":[[${firstTable},"三位最终车号","最终股道",false,false,false,0.93]]}`;
 
   return `你是轨道交通手写车表${review ? '疑难行复核' : '识别'}助手。请直接读取照片，不做解释。
 
@@ -42,6 +42,36 @@ A=东，C=西，箭头不属于股道。
 
 ${outputFormat}
 每个指定表号必须恰好出现一次。输出前检查范围和重复；冲突时保留看到的值、降低置信度并把不确定设为true。`;
+}
+
+function buildReviewPrompt(config, candidates, examples) {
+  const firstTable = config.entries[0].table_no;
+  const trainMin = String(config.train_number.min).padStart(3, '0');
+  const trainMax = String(config.train_number.max).padStart(3, '0');
+  const candidateLines = candidates.map(x => {
+    const flags = [x.cm ? '车号疑似划改' : '', x.gm ? '股道疑似划改' : '', x.a ? '主模型不确定' : ''].filter(Boolean).join('、') || '规则校验异常';
+    return `表号${x.n}：主模型车号=${x.c || '空'}，股道=${x.g || '空'}；${flags}`;
+  }).join('\n');
+  const memoryPrompt = correctionExamplesPrompt(examples);
+
+  return `你是轨道交通手写车表的纠错复核助手。本次只复核${tableSpec(config.entries)}，忽略其他行，禁止重新抄整张表。
+
+逐行按以下顺序核对：
+1. 先找到印刷表号，再沿同一行向右找到车号和股道；表号右侧的1或2是无关列。
+2. 列出格内所有可见候选；横线、斜线、叉号或涂抹覆盖的值是被删除的旧值。
+3. 被划掉内容旁边、上方或下方最后一个未划掉的新写值才是最终值，不分红笔黑笔。
+4. 主模型给出的值可能正是被划掉旧值，必须重新看图，不能直接照抄。
+5. 车号范围${trainMin}至${trainMax}；A=东，C=西，箭头不属于股道。看不清就留空并将a设为true，禁止猜测。
+
+主模型候选：
+${candidateLines}
+
+${memoryPrompt}
+历史案例仅用于理解常见误读，图片证据优先，绝不能把表号与固定答案绑定。
+
+只返回紧凑JSON，不要Markdown或解释：
+{"rows":[{"n":${firstTable},"c":"最终未划掉的三位车号","g":"最终股道","oc":"能看清且已划掉的旧车号，否则空字符串","og":"能看清且已划掉的旧股道，否则空字符串","cm":true,"gm":false,"a":false,"p":0.93}]}
+n=表号，c/g=最终车号/股道，oc/og=能看清且已被划掉的旧车号/旧股道，cm/gm=是否存在划掉重写，a=最终值不确定，p=置信度。每个指定表号必须恰好出现一次。`;
 }
 
 function compactBoolean(value) {
@@ -60,13 +90,28 @@ function expandCompactRows(input) {
       table_no: row.n, train_number: row.c, track_name: row.g,
       train_modified: compactBoolean(row.cm), track_modified: compactBoolean(row.gm),
       ambiguity: compactBoolean(row.a), confidence: row.p,
-      old_train_number: '', old_track_name: '', note: ''
+      old_train_number: row.oc || '', old_track_name: row.og || '', note: ''
     };
     return row;
   });
 }
 
-function geminiRecognitionSchema() {
+function geminiRecognitionSchema(reviewMode = false) {
+  const properties = {
+    n: { type: 'INTEGER' },
+    c: { type: 'STRING' },
+    g: { type: 'STRING' },
+    cm: { type: 'BOOLEAN' },
+    gm: { type: 'BOOLEAN' },
+    a: { type: 'BOOLEAN' },
+    p: { type: 'NUMBER', minimum: 0, maximum: 1 }
+  };
+  const required = ['n', 'c', 'g', 'cm', 'gm', 'a', 'p'];
+  if (reviewMode) {
+    properties.oc = { type: 'STRING' };
+    properties.og = { type: 'STRING' };
+    required.splice(3, 0, 'oc', 'og');
+  }
   return {
     type: 'OBJECT',
     properties: {
@@ -74,17 +119,9 @@ function geminiRecognitionSchema() {
         type: 'ARRAY',
         items: {
           type: 'OBJECT',
-          properties: {
-            n: { type: 'INTEGER' },
-            c: { type: 'STRING' },
-            g: { type: 'STRING' },
-            cm: { type: 'BOOLEAN' },
-            gm: { type: 'BOOLEAN' },
-            a: { type: 'BOOLEAN' },
-            p: { type: 'NUMBER', minimum: 0, maximum: 1 }
-          },
-          required: ['n', 'c', 'g', 'cm', 'gm', 'a', 'p'],
-          propertyOrdering: ['n', 'c', 'g', 'cm', 'gm', 'a', 'p']
+          properties,
+          required,
+          propertyOrdering: required
         }
       }
     },
@@ -152,7 +189,7 @@ function cleanJsonText(text) {
   return String(text || '').trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
 }
 
-async function callGeminiOfficial({ env, prompt, image, timeoutMs, debugTextOnly = false }) {
+async function callGeminiOfficial({ env, prompt, image, timeoutMs, debugTextOnly = false, reviewMode = false }) {
   const apiKey = env.GEMINI_API_KEY || env.OPENAI_API_KEY;
   if (!apiKey) throw publicError('缺少 GEMINI_API_KEY 或 OPENAI_API_KEY。', 500);
   const model = env.GEMINI_MODEL || env.OPENAI_MODEL || 'gemini-2.0-flash';
@@ -168,7 +205,7 @@ async function callGeminiOfficial({ env, prompt, image, timeoutMs, debugTextOnly
     temperature: 0,
     responseMimeType: 'application/json'
   };
-  if (!debugTextOnly) generationConfig.responseSchema = geminiRecognitionSchema();
+  if (!debugTextOnly) generationConfig.responseSchema = geminiRecognitionSchema(reviewMode);
 
   const body = {
     contents: [{ role: 'user', parts }],
@@ -312,8 +349,18 @@ function reviewPriority(row) {
   return score;
 }
 
-function sameNumbers(a, b) {
-  return a.length === b.length && a.every((x, i) => x === b[i]);
+function isSubsetNumbers(requested, permitted) {
+  const allowed = new Set(permitted);
+  return requested.length > 0 && requested.every(x => allowed.has(x));
+}
+
+function relevantCorrectionExamples(examples, candidates, limit = 4) {
+  const trainValues = new Set(candidates.map(x => String(x.c || '')).filter(Boolean));
+  const trackValues = new Set(candidates.map(x => String(x.g || '')).filter(Boolean));
+  return (examples || []).filter(x => {
+    const original = String(x.original_value || '');
+    return x.field_type === 'track_name' ? trackValues.has(original) : trainValues.has(original);
+  }).slice(0, limit);
 }
 
 async function handleReview({ request, env, principal, body, max }) {
@@ -340,18 +387,22 @@ async function handleReview({ request, env, principal, body, max }) {
   const config = parseSheetConfig(body.config);
   const requested = config.entries.map(x => x.table_no).sort((a, b) => a - b);
   const permitted = (Array.isArray(token.table_nos) ? token.table_nos : []).map(Number).sort((a, b) => a - b);
-  if (!requested.length || !sameNumbers(requested, permitted)) {
+  if (!isSubsetNumbers(requested, permitted)) {
     throw publicError('自动复核表号范围与凭证不匹配。', 400);
   }
 
-  const timeoutMs = Math.max(12000, Math.min(40000, num(env.REVIEW_TIMEOUT_MS, 28000)));
+  const candidates = (Array.isArray(token.candidates) ? token.candidates : []).filter(x => requested.includes(Number(x.n)));
+  if (candidates.length !== requested.length) throw publicError('自动复核缺少主模型候选。', 400);
+  const memory = relevantCorrectionExamples(await getCorrectionExamples(env.DB, 20), candidates);
+  const timeoutMs = Math.max(12000, Math.min(24000, num(env.REVIEW_TIMEOUT_MS, 22000)));
   const started = Date.now();
   const result = await callModel({
     env,
     provider,
-    prompt: buildPrompt(config, true, provider === 'gemini'),
+    prompt: buildReviewPrompt(config, candidates, memory),
     image: body.image,
-    timeoutMs
+    timeoutMs,
+    reviewMode: true
   });
   const rows = parseModelRows(result.text, config);
   const usage = await usageStatus(env.DB, principal.sub);
@@ -412,7 +463,7 @@ export async function onRequestPost({ request, env }) {
   const used = await consumeDaily(env.DB, p.sub, dl, gl);
   const reviewer = alternateProvider(primaryProvider);
   const flagged = normalizedRows.filter(x => x.needs_review).sort((a, b) => reviewPriority(b) - reviewPriority(a));
-  const reviewRows = providerConfigured(env, reviewer) ? flagged.slice(0, 12) : [];
+  const reviewRows = providerConfigured(env, reviewer) ? flagged.slice(0, 9) : [];
   let review = null;
   if (reviewRows.length) {
     const tableNos = reviewRows.map(x => x.table_no);
@@ -420,8 +471,13 @@ export async function onRequestPost({ request, env }) {
       provider: reviewer,
       table_nos: tableNos,
       total_flagged: flagged.length,
+      batch_size: 3,
       token: await signToken({
         scope: 'review', sub: p.sub, reviewer, table_nos: tableNos,
+        candidates: reviewRows.map(x => ({
+          n: x.table_no, c: x.train_number, g: x.track_name,
+          cm: x.train_modified, gm: x.track_modified, a: x.ambiguity
+        })),
         image_hash: await imageFingerprint(body.image),
         ver: String(env.TOKEN_VERSION || '1'),
         exp: Math.floor(Date.now() / 1000) + 600
