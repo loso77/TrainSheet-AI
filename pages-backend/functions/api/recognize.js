@@ -123,8 +123,7 @@ async function callGeminiOfficial({ env, prompt, image, timeoutMs, debugTextOnly
     contents: [{ role: 'user', parts }],
     generationConfig: {
       temperature: 0,
-      response_mime_type: 'application/json',
-      maxOutputTokens: 2048
+      response_mime_type: 'application/json'
     }
   };
 
@@ -251,7 +250,7 @@ function parseModelRows(resultText, config) {
   const modelText = cleanJsonText(resultText);
   let parsed;
   try { parsed = JSON.parse(modelText); } catch {
-    throw publicError('大模型返回的 JSON 无效：' + modelText.slice(0, 240) + '；本次未计次数。', 502);
+    throw publicError('大模型返回结果不完整或格式无效，本次未计次数。', 502);
   }
   return normalizeRows(expandCompactRows(parsed.rows), config);
 }
