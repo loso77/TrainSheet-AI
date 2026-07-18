@@ -17,10 +17,18 @@ function tableSpec(entries) {
   return continuous ? `${nums[0]}至${nums[nums.length - 1]}（共${nums.length}个）` : `${nums.join('、')}（共${nums.length}个）`;
 }
 
-function buildPrompt(config, review = false) {
+function buildPrompt(config, review = false, structuredRows = false) {
   const firstTable = config.entries[0].table_no;
   const trainMin = String(config.train_number.min).padStart(3, '0');
   const trainMax = String(config.train_number.max).padStart(3, '0');
+  const outputFormat = structuredRows
+    ? `只返回紧凑JSON，不要Markdown、字段名解释或备注。每个表号返回一个对象：
+{"rows":[{"n":${firstTable},"c":"044","g":"1西","cm":true,"gm":false,"a":false,"p":0.93}]}
+n=表号，c=最终车号，g=最终股道，cm=车号有划改，gm=股道有划改，a=最终值不确定，p=置信度。`
+    : `只返回紧凑JSON，不要Markdown、字段名解释或备注。每个表号返回一个七项数组：
+[表号,最终车号,最终股道,车号有划改,股道有划改,最终值不确定,置信度]
+例如：{"rows":[[${firstTable},"044","1西",true,false,false,0.93]]}`;
+
   return `你是轨道交通手写车表${review ? '疑难行复核' : '识别'}助手。请直接读取照片，不做解释。
 
 本次表号：${tableSpec(config.entries)}。
@@ -32,19 +40,56 @@ A=东，C=西，箭头不属于股道。
 
 修改规则必须执行：被横线、斜线、叉号或涂抹划掉的旧值无效；同一格旁边、上方或下方未划掉的手写新值才是最终值，不分红笔黑笔。多次修改只取最后一个未划掉值。不要因旧值更工整而选旧值。看不清最终值时留空并把ambiguity设为true，禁止猜测。
 
-只返回紧凑JSON，不要Markdown、字段名解释或备注。每个表号返回一个七项数组：
-[表号,最终车号,最终股道,车号有划改,股道有划改,最终值不确定,置信度]
-例如：{"rows":[[${firstTable},"044","1西",true,false,false,0.93]]}
+${outputFormat}
 每个指定表号必须恰好出现一次。输出前检查范围和重复；冲突时保留看到的值、降低置信度并把不确定设为true。`;
 }
 
+function compactBoolean(value) {
+  return value === true || value === 1 || String(value).toLowerCase() === 'true';
+}
+
 function expandCompactRows(input) {
-  return (Array.isArray(input) ? input : []).map(row => Array.isArray(row) ? {
-    table_no: row[0], train_number: row[1], track_name: row[2],
-    train_modified: Boolean(row[3]), track_modified: Boolean(row[4]),
-    ambiguity: Boolean(row[5]), confidence: row[6],
-    old_train_number: '', old_track_name: '', note: ''
-  } : row);
+  return (Array.isArray(input) ? input : []).map(row => {
+    if (Array.isArray(row)) return {
+      table_no: row[0], train_number: row[1], track_name: row[2],
+      train_modified: compactBoolean(row[3]), track_modified: compactBoolean(row[4]),
+      ambiguity: compactBoolean(row[5]), confidence: row[6],
+      old_train_number: '', old_track_name: '', note: ''
+    };
+    if (row && typeof row === 'object' && ('n' in row || 'c' in row || 'g' in row)) return {
+      table_no: row.n, train_number: row.c, track_name: row.g,
+      train_modified: compactBoolean(row.cm), track_modified: compactBoolean(row.gm),
+      ambiguity: compactBoolean(row.a), confidence: row.p,
+      old_train_number: '', old_track_name: '', note: ''
+    };
+    return row;
+  });
+}
+
+function geminiRecognitionSchema() {
+  return {
+    type: 'OBJECT',
+    properties: {
+      rows: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            n: { type: 'INTEGER' },
+            c: { type: 'STRING' },
+            g: { type: 'STRING' },
+            cm: { type: 'BOOLEAN' },
+            gm: { type: 'BOOLEAN' },
+            a: { type: 'BOOLEAN' },
+            p: { type: 'NUMBER', minimum: 0, maximum: 1 }
+          },
+          required: ['n', 'c', 'g', 'cm', 'gm', 'a', 'p'],
+          propertyOrdering: ['n', 'c', 'g', 'cm', 'gm', 'a', 'p']
+        }
+      }
+    },
+    required: ['rows']
+  };
 }
 
 async function imageFingerprint(image) {
@@ -119,12 +164,15 @@ async function callGeminiOfficial({ env, prompt, image, timeoutMs, debugTextOnly
     parts.push({ inline_data: { mime_type: mimeType, data: base64 } });
   }
 
+  const generationConfig = {
+    temperature: 0,
+    responseMimeType: 'application/json'
+  };
+  if (!debugTextOnly) generationConfig.responseSchema = geminiRecognitionSchema();
+
   const body = {
     contents: [{ role: 'user', parts }],
-    generationConfig: {
-      temperature: 0,
-      response_mime_type: 'application/json'
-    }
+    generationConfig
   };
 
   const r = await withTimeout(signal => fetch(url, {
@@ -298,7 +346,13 @@ async function handleReview({ request, env, principal, body, max }) {
 
   const timeoutMs = Math.max(12000, Math.min(40000, num(env.REVIEW_TIMEOUT_MS, 28000)));
   const started = Date.now();
-  const result = await callModel({ env, provider, prompt: buildPrompt(config, true), image: body.image, timeoutMs });
+  const result = await callModel({
+    env,
+    provider,
+    prompt: buildPrompt(config, true, provider === 'gemini'),
+    image: body.image,
+    timeoutMs
+  });
   const rows = parseModelRows(result.text, config);
   const usage = await usageStatus(env.DB, principal.sub);
   return json({
@@ -345,17 +399,17 @@ export async function onRequestPost({ request, env }) {
   if (beforeUsage.global_used >= gl) throw publicError('今日服务总额度已用完。', 429);
   if (beforeUsage.device_used >= dl) throw publicError('这台设备今日识别次数已用完。', 429);
 
-  const prompt = buildPrompt(config);
+  const provider = String(body.provider || 'default').toLowerCase().trim();
+  const primaryProvider = getProvider(env, provider);
+  const prompt = buildPrompt(config, false, primaryProvider === 'gemini');
   const timeoutMs = Math.max(15000, Math.min(55000, num(env.MODEL_TIMEOUT_MS, 35000)));
 
   const started = Date.now();
-  const provider = String(body.provider || 'default').toLowerCase().trim();
   const result = await callModel({ env, provider, prompt, image: body.image, timeoutMs });
   const elapsed_ms = Date.now() - started;
   const normalizedRows = parseModelRows(result.text, config);
 
   const used = await consumeDaily(env.DB, p.sub, dl, gl);
-  const primaryProvider = getProvider(env, provider);
   const reviewer = alternateProvider(primaryProvider);
   const flagged = normalizedRows.filter(x => x.needs_review).sort((a, b) => reviewPriority(b) - reviewPriority(a));
   const reviewRows = providerConfigured(env, reviewer) ? flagged.slice(0, 12) : [];
