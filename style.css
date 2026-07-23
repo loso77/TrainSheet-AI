@@ -13,6 +13,44 @@
   line-height:1.45;
   text-align:center;
 }
+.xlsx-scope{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-top:14px;
+  padding:10px 12px;
+  border:1px solid #d0d5dd;
+  border-radius:13px;
+  background:#f8fafc;
+}
+.xlsx-scope label{
+  flex:0 0 auto;
+  color:#475467;
+  font-size:13px;
+  font-weight:750;
+}
+.xlsx-scope select{
+  min-width:0;
+  flex:1;
+  border:1px solid #cbd5e1;
+  border-radius:10px;
+  background:#fff;
+  color:#101828;
+  padding:9px 10px;
+  font-size:14px;
+  outline:none;
+}
+.xlsx-scope select:focus{
+  border-color:#2563eb;
+  box-shadow:0 0 0 3px #2563eb17;
+}
+@media(max-width:760px){
+  .xlsx-scope{
+    align-items:stretch;
+    flex-direction:column;
+    gap:6px;
+  }
+}
 
 .fixed-time{font-weight:700;color:#344054;background:#f8fafc;white-space:nowrap}
 

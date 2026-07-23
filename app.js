@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);
-const E={settingsBtn:$('settingsBtn'),settingsPanel:$('settingsPanel'),closeSettings:$('closeSettings'),workerUrl:$('workerUrl'),saveWorker:$('saveWorker'),debugModelBtn:$('debugModelBtn'),connectionState:$('connectionState'),logoutBtn:$('logoutBtn'),authCard:$('authCard'),accessCode:$('accessCode'),authorizeBtn:$('authorizeBtn'),authStatus:$('authStatus'),mainCard:$('mainCard'),imageInput:$('imageInput'),preview:$('preview'),previewWrap:$('previewWrap'),resetZoomBtn:$('resetZoomBtn'),removeImage:$('removeImage'),recognizeBtn:$('recognizeBtn'),progress:$('progress'),status:$('status'),quota:$('quota'),resultCard:$('resultCard'),summary:$('summary'),resultBody:$('resultBody'),clearResult:$('clearResult'),copyBtn:$('copyBtn'),csvBtn:$('csvBtn'),xlsxBtn:$('xlsxBtn'),editAllBtn:$('editAllBtn'),compareWorkspace:$('compareWorkspace'),trainMin:$('trainMin'),trainMax:$('trainMax'),configBody:$('configBody'),configCount:$('configCount'),addConfigRow:$('addConfigRow'),sortConfig:$('sortConfig'),restoreConfig:$('restoreConfig'),saveConfig:$('saveConfig'),configStatus:$('configStatus')};
+const E={settingsBtn:$('settingsBtn'),settingsPanel:$('settingsPanel'),closeSettings:$('closeSettings'),workerUrl:$('workerUrl'),saveWorker:$('saveWorker'),debugModelBtn:$('debugModelBtn'),connectionState:$('connectionState'),logoutBtn:$('logoutBtn'),authCard:$('authCard'),accessCode:$('accessCode'),authorizeBtn:$('authorizeBtn'),authStatus:$('authStatus'),mainCard:$('mainCard'),imageInput:$('imageInput'),preview:$('preview'),previewWrap:$('previewWrap'),resetZoomBtn:$('resetZoomBtn'),removeImage:$('removeImage'),recognizeBtn:$('recognizeBtn'),progress:$('progress'),status:$('status'),quota:$('quota'),resultCard:$('resultCard'),summary:$('summary'),resultBody:$('resultBody'),clearResult:$('clearResult'),copyBtn:$('copyBtn'),csvBtn:$('csvBtn'),xlsxBtn:$('xlsxBtn'),xlsxScope:$('xlsxScope'),editAllBtn:$('editAllBtn'),compareWorkspace:$('compareWorkspace'),trainMin:$('trainMin'),trainMax:$('trainMax'),configBody:$('configBody'),configCount:$('configCount'),addConfigRow:$('addConfigRow'),sortConfig:$('sortConfig'),restoreConfig:$('restoreConfig'),saveConfig:$('saveConfig'),configStatus:$('configStatus')};
 let file=null,rows=[],originalRows=[],editAllMode=false;
 const DEFAULT_CONFIG={entries:[{table_no:31,time:'4:21'},{table_no:32,time:'4:46'},{table_no:33,time:'4:50'},{table_no:34,time:'4:52'},{table_no:35,time:'5:00'},{table_no:36,time:'5:08'},{table_no:37,time:'5:10'},{table_no:38,time:'5:16'},{table_no:39,time:'5:18'},{table_no:40,time:'5:38'},{table_no:41,time:'5:47'},{table_no:42,time:'5:51'},{table_no:43,time:'5:55'},{table_no:44,time:'5:59'},{table_no:45,time:'6:05'},{table_no:46,time:'6:09'},{table_no:47,time:'6:13'},{table_no:48,time:'6:19'},{table_no:49,time:'6:23'},{table_no:50,time:'6:27'},{table_no:51,time:'6:31'},{table_no:52,time:'6:35'},{table_no:53,time:'6:39'},{table_no:54,time:'6:43'},{table_no:55,time:'6:47'},{table_no:56,time:'6:51'},{table_no:57,time:'6:55'},{table_no:58,time:'7:00'},{table_no:59,time:'7:05'},{table_no:60,time:'7:17'},{table_no:61,time:'7:35'}],train_number:{min:1,max:112,unique:true}};
 function cloneConfig(c){return JSON.parse(JSON.stringify(c))}
@@ -70,8 +70,19 @@ async function downloadBlob(blob, filename){
 async function exportXlsx(){
   if(!rows.length)return status(E.status,'当前没有可导出的识别结果。','error');
   if(typeof ExcelJS==='undefined')return status(E.status,'Excel 模板组件尚未加载，请检查网络后刷新页面。','error');
-  const missing=rows.some(r=>!String(r.train_number).trim()||!String(r.track_name).trim());
-  const message=missing?'仍有车号或股道为空。确认这些确实为空，并保存学习、下载 XLSX 吗？':'确认已对照原照片核对完毕，并保存纠错、按原始模板下载 XLSX 吗？';
+  const scope=E.xlsxScope?.value==='east'?'east':'all';
+  const areaOf=r=>{const track=normalizeTrackName(r.track_name);return track.endsWith('东')?'east':track.endsWith('西')?'west':'unknown'};
+  if(scope==='east'){
+    const unknownRows=rows.filter(r=>areaOf(r)==='unknown');
+    if(unknownRows.length){
+      return status(E.status,`仍有 ${unknownRows.length} 条记录的股道无法判断东区或西区，请先确认股道后再导出东区表格。`,'error');
+    }
+  }
+  const exportRows=scope==='east'?rows.filter(r=>areaOf(r)==='east'):rows;
+  if(!exportRows.length)return status(E.status,'当前识别结果中没有东区记录，无法生成东区表格。','error');
+  const missing=exportRows.some(r=>!String(r.train_number).trim()||!String(r.track_name).trim());
+  const scopeMessage=scope==='east'?`将导出 ${exportRows.length} 条东区记录，并彻底删除西区记录。`:'将导出全部东区和西区记录。';
+  const message=missing?`仍有车号或股道为空。${scopeMessage}\n\n确认这些确实为空，并保存学习、下载 XLSX 吗？`:`确认已对照原照片核对完毕吗？${scopeMessage}\n\n确认后将保存纠错并按原始模板下载 XLSX。`;
   if(!window.confirm(message))return;
   E.xlsxBtn.disabled=true;
   status(E.status,'正在保存人工纠错……');
@@ -102,7 +113,7 @@ async function exportXlsx(){
 
     const originalRowCount=worksheet.rowCount;
     const styleSourceRow=Math.min(Math.max(2,originalRowCount),32);
-    while(worksheet.rowCount<rows.length+1){
+    while(worksheet.rowCount<exportRows.length+1){
       const target=worksheet.addRow([]),source=worksheet.getRow(styleSourceRow);
       target.height=source.height;
       for(let col=1;col<=3;col++){
@@ -115,7 +126,7 @@ async function exportXlsx(){
         t.font=s.font?JSON.parse(JSON.stringify(s.font)):t.font;
       }
     }
-    rows.forEach((r,i)=>{
+    exportRows.forEach((r,i)=>{
       const row=i+2;
       const train=String(r.train_number??'').trim().padStart(3,'0').slice(-3);
       const track=normalizeTrackName(r.track_name);
@@ -125,15 +136,22 @@ async function exportXlsx(){
       worksheet.getCell(`B${row}`).value=String(r.time??'').trim();
       worksheet.getCell(`C${row}`).value=track;
     });
-    for(let row=rows.length+2;row<=worksheet.rowCount;row++){
-      worksheet.getCell(`A${row}`).value=null;
-      worksheet.getCell(`B${row}`).value=null;
-      worksheet.getCell(`C${row}`).value=null;
+    const firstUnusedRow=exportRows.length+2;
+    if(scope==='east'&&worksheet.rowCount>=firstUnusedRow){
+      for(let row=worksheet.rowCount;row>=firstUnusedRow;row--)worksheet.spliceRows(row,1);
+    }else{
+      for(let row=firstUnusedRow;row<=worksheet.rowCount;row++){
+        worksheet.getCell(`A${row}`).value=null;
+        worksheet.getCell(`B${row}`).value=null;
+        worksheet.getCell(`C${row}`).value=null;
+      }
     }
 
+    if(scope==='east')worksheet.name='东区时刻表';
     const output=await workbook.xlsx.writeBuffer();
-    await downloadBlob(new Blob([output],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),`全股道时刻表-按车号排列_${safeFileDate()}.xlsx`);
-    status(E.status,`${learnMessage} 已按原始模板生成 XLSX。`,'success');
+    const filename=scope==='east'?`东区时刻表-按车号排列_${safeFileDate()}.xlsx`:`全股道时刻表-按车号排列_${safeFileDate()}.xlsx`;
+    await downloadBlob(new Blob([output],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),filename);
+    status(E.status,`${learnMessage} 已按原始模板生成${scope==='east'?`仅含 ${exportRows.length} 条东区记录的`:'完整'} XLSX。`,'success');
   }catch(e){
     status(E.status,'生成模板 XLSX 失败：'+e.message,'error');
   }finally{
