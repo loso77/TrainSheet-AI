@@ -92,15 +92,8 @@
           <tbody id="resultBody"></tbody>
         </table>
       </div>
-      <div class="xlsx-scope">
-        <label for="xlsxScope">XLSX 输出范围</label>
-        <select id="xlsxScope">
-          <option value="all">全部区域（东区＋西区）</option>
-          <option value="east">仅东区（彻底删除西区记录）</option>
-        </select>
-      </div>
       <button id="xlsxBtn" class="primary confirm-download">确认无误、保存学习并下载 XLSX</button>
-      <p class="download-hint">点击后保存车号和股道纠错，并直接套用你提供的原始 Excel 模板。选择“仅东区”时，西区记录会彻底删除，东区记录连续排列。</p>
+      <p class="download-hint">点击后保存车号和股道纠错，并直接套用你提供的原始 Excel 模板。表头、颜色、边框、列宽、行高和车号前导零都会保留。</p>
       <div class="actions">
         <button id="copyBtn" class="secondary">复制表格</button>
         <button id="csvBtn" class="secondary">导出 CSV</button>
@@ -108,7 +101,7 @@
     </section>
   </div>
 
-  <footer>V2.5.9 · XLSX 可选仅导出东区</footer>
+  <footer>V2.5.8 · 大模型连接诊断</footer>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="app.js"></script>
