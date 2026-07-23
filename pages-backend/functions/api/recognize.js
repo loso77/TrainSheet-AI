@@ -96,39 +96,6 @@ function expandCompactRows(input) {
   });
 }
 
-function geminiRecognitionSchema(reviewMode = false) {
-  const properties = {
-    n: { type: 'INTEGER' },
-    c: { type: 'STRING' },
-    g: { type: 'STRING' },
-    cm: { type: 'BOOLEAN' },
-    gm: { type: 'BOOLEAN' },
-    a: { type: 'BOOLEAN' },
-    p: { type: 'NUMBER', minimum: 0, maximum: 1 }
-  };
-  const required = ['n', 'c', 'g', 'cm', 'gm', 'a', 'p'];
-  if (reviewMode) {
-    properties.oc = { type: 'STRING' };
-    properties.og = { type: 'STRING' };
-    required.splice(3, 0, 'oc', 'og');
-  }
-  return {
-    type: 'OBJECT',
-    properties: {
-      rows: {
-        type: 'ARRAY',
-        items: {
-          type: 'OBJECT',
-          properties,
-          required,
-          propertyOrdering: required
-        }
-      }
-    },
-    required: ['rows']
-  };
-}
-
 async function imageFingerprint(image) {
   const bytes = new TextEncoder().encode(String(image || ''));
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
@@ -137,27 +104,27 @@ async function imageFingerprint(image) {
 
 function providerConfigured(env, provider) {
   if (provider === 'doubao') return Boolean(env.DOUBAO_API_KEY);
-  if (provider === 'gemini') return Boolean(env.GEMINI_API_KEY || env.OPENAI_API_KEY);
+  if (provider === 'qwen') return Boolean(env.QWEN_API_KEY);
   return Boolean(env.OPENAI_API_KEY);
 }
 
 function alternateProvider(provider) {
-  return provider === 'doubao' ? 'gemini' : 'doubao';
+  return provider === 'doubao' ? 'qwen' : 'doubao';
 }
 
 function getProvider(env, requested = '') {
   const wanted = String(requested || '').toLowerCase().trim();
   if (wanted === 'doubao') return 'doubao';
-  if (wanted === 'gemini' || wanted === 'google') return 'gemini';
+  if (wanted === 'qwen' || wanted === 'alibaba' || wanted === 'dashscope') return 'qwen';
+  // 兼容尚未刷新到新版的前端：旧的 Gemini 选项自动迁移为千问。
+  if (wanted === 'gemini' || wanted === 'google') return 'qwen';
   if (wanted && wanted !== 'default') throw publicError('不支持的大模型选项。', 400);
   const explicit = String(env.MODEL_PROVIDER || '').toLowerCase().trim();
   if (explicit === 'doubao') return 'doubao';
-  if (explicit === 'gemini' || explicit === 'google') return 'gemini';
+  if (['qwen', 'alibaba', 'dashscope', 'gemini', 'google'].includes(explicit)) return 'qwen';
   if (explicit === 'openai') return 'openai';
-  if (env.GEMINI_API_KEY) return 'gemini';
-  const url = String(env.OPENAI_API_URL || '');
-  const model = String(env.OPENAI_MODEL || env.GEMINI_MODEL || '');
-  if (url.includes('generativelanguage.googleapis.com') || model.toLowerCase().includes('gemini')) return 'gemini';
+  if (env.DOUBAO_API_KEY) return 'doubao';
+  if (env.QWEN_API_KEY) return 'qwen';
   return 'openai';
 }
 
@@ -176,47 +143,40 @@ async function withTimeout(promiseFactory, ms) {
   }
 }
 
-function extractGeminiText(data) {
-  const parts = data?.candidates?.[0]?.content?.parts || [];
-  const text = parts.map(p => p?.text || '').join('').trim();
-  if (text) return text;
-  const reason = data?.candidates?.[0]?.finishReason;
-  if (reason) throw publicError(`Gemini没有返回文本，结束原因：${reason}；本次未计次数。`, 502);
-  throw publicError('Gemini没有返回可解析文本，本次未计次数。', 502);
-}
-
 function cleanJsonText(text) {
   return String(text || '').trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
 }
 
-async function callGeminiOfficial({ env, prompt, image, timeoutMs, debugTextOnly = false, reviewMode = false }) {
-  const apiKey = env.GEMINI_API_KEY || env.OPENAI_API_KEY;
-  if (!apiKey) throw publicError('缺少 GEMINI_API_KEY 或 OPENAI_API_KEY。', 500);
-  const model = env.GEMINI_MODEL || env.OPENAI_MODEL || 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+function qwenEndpoint(baseUrl) {
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!base) return 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+  if (/\/chat\/completions$/i.test(base)) return base;
+  if (/\/compatible-mode\/v1$/i.test(base)) return `${base}/chat/completions`;
+  return `${base}/compatible-mode/v1/chat/completions`;
+}
 
-  const parts = [{ text: debugTextOnly ? '只返回 {"ok":true,"message":"debug"} 这个JSON对象。' : prompt }];
-  if (!debugTextOnly) {
-    const { mimeType, base64 } = splitDataUrl(image);
-    parts.push({ inline_data: { mime_type: mimeType, data: base64 } });
-  }
+async function callQwen({ env, prompt, image, timeoutMs, debugTextOnly = false }) {
+  if (!env.QWEN_API_KEY) throw publicError('千问尚未配置：缺少 QWEN_API_KEY。', 503);
+  const model = env.QWEN_MODEL || 'qwen3.7-plus';
+  const url = qwenEndpoint(env.QWEN_API_BASE_URL);
+  const content = debugTextOnly
+    ? [{ type: 'text', text: '只返回 {"ok":true,"message":"debug"} 这个JSON对象。' }]
+    : [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }];
 
-  const generationConfig = {
-    temperature: 0,
-    responseMimeType: 'application/json'
-  };
-  if (!debugTextOnly) generationConfig.responseSchema = geminiRecognitionSchema(reviewMode);
-
-  const body = {
-    contents: [{ role: 'user', parts }],
-    generationConfig
-  };
+  if (!debugTextOnly) splitDataUrl(image);
 
   const r = await withTimeout(signal => fetch(url, {
     method: 'POST',
     signal,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    headers: { Authorization: `Bearer ${env.QWEN_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      max_tokens: 2048,
+      enable_thinking: false,
+      response_format: { type: 'json_object' },
+      messages: [{ role: 'user', content }]
+    })
   }), timeoutMs);
 
   const rawText = await r.text();
@@ -224,14 +184,20 @@ async function callGeminiOfficial({ env, prompt, image, timeoutMs, debugTextOnly
   try { data = JSON.parse(rawText); } catch {}
 
   if (!r.ok) {
-    const detail = data?.error?.message || rawText || `HTTP ${r.status}`;
-    if (r.status === 429) throw publicError('Gemini请求过于频繁或额度受限，本次未计次数。', 429);
-    if (r.status === 503) throw publicError('Gemini当前繁忙，本次未计次数，请稍后重试。', 503);
-    if (r.status >= 500) throw publicError(`Gemini服务暂时不可用（${r.status}），本次未计次数。`, 503);
-    throw publicError('Gemini接口错误：' + String(detail).slice(0, 350) + '；本次未计次数。', 502);
+    const detail = data?.error?.message || data?.message || rawText || `HTTP ${r.status}`;
+    if (r.status === 401 || r.status === 403) throw publicError('千问 API Key 无效或无权调用该模型，本次未计次数。', 502);
+    if (r.status === 429) throw publicError('千问请求过于频繁或额度受限，本次未计次数。', 429);
+    if (r.status === 503) throw publicError('千问当前繁忙，本次未计次数，请稍后重试。', 503);
+    if (r.status >= 500) throw publicError(`千问服务暂时不可用（${r.status}），本次未计次数。`, 503);
+    throw publicError('千问接口错误：' + String(detail).slice(0, 350) + '；本次未计次数。', 502);
   }
 
-  return { text: extractGeminiText(data), provider: 'gemini', model };
+  let modelText = data?.choices?.[0]?.message?.content;
+  if (Array.isArray(modelText)) modelText = modelText.map(x => typeof x === 'string' ? x : (x?.text || '')).join('');
+  if (typeof modelText !== 'string') modelText = data?.output_text || data?.text;
+  if (typeof modelText !== 'string') throw publicError('千问没有返回可解析结果，本次未计次数。', 502);
+
+  return { text: modelText, provider: 'qwen', model };
 }
 
 async function callOpenAICompatible({ env, prompt, image, timeoutMs, debugTextOnly = false }) {
@@ -326,7 +292,7 @@ async function callDoubao({ env, prompt, image, timeoutMs, debugTextOnly = false
 
 async function callModel(args) {
   const provider = getProvider(args.env, args.provider);
-  if (provider === 'gemini') return await callGeminiOfficial(args);
+  if (provider === 'qwen') return await callQwen(args);
   if (provider === 'doubao') return await callDoubao(args);
   return await callOpenAICompatible(args);
 }
@@ -452,7 +418,7 @@ export async function onRequestPost({ request, env }) {
 
   const provider = String(body.provider || 'default').toLowerCase().trim();
   const primaryProvider = getProvider(env, provider);
-  const prompt = buildPrompt(config, false, primaryProvider === 'gemini');
+  const prompt = buildPrompt(config, false, primaryProvider === 'qwen');
   const timeoutMs = Math.max(15000, Math.min(55000, num(env.MODEL_TIMEOUT_MS, 35000)));
 
   const started = Date.now();
