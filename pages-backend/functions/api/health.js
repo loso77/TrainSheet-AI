@@ -2,7 +2,7 @@ import { json } from '../_lib/shared.js';
 export async function onRequestGet({ env }) {
   return json({
     ok: true,
-    version: '2.7.4-qwen-review',
+    version: '2.7.5-review-only',
     database: !!env.DB,
     model: env.QWEN_MODEL || 'qwen3.7-plus',
     providers: {
