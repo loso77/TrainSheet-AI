@@ -2,13 +2,14 @@ import { json } from '../_lib/shared.js';
 export async function onRequestGet({ env }) {
   return json({
     ok: true,
-    version: '2.7.1-batched-correction-review',
+    version: '2.7.4-qwen-review',
     database: !!env.DB,
-    model: env.OPENAI_MODEL || env.GEMINI_MODEL || 'default',
+    model: env.QWEN_MODEL || 'qwen3.7-plus',
     providers: {
-      gemini: !!(env.GEMINI_API_KEY || env.OPENAI_API_KEY),
+      qwen: !!env.QWEN_API_KEY,
       doubao: !!env.DOUBAO_API_KEY
     },
+    qwen_model: env.QWEN_MODEL || 'qwen3.7-plus',
     doubao_model: env.DOUBAO_MODEL || 'doubao-seed-2-1-pro-260628'
   });
 }
