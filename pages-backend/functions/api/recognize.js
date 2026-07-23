@@ -418,6 +418,9 @@ export async function onRequestPost({ request, env }) {
 
   const provider = String(body.provider || 'default').toLowerCase().trim();
   const primaryProvider = getProvider(env, provider);
+  if (primaryProvider === 'qwen') {
+    throw publicError('千问现仅用于疑难行复核，请使用智能识别或快速识别。', 400);
+  }
   const prompt = buildPrompt(config, false, primaryProvider === 'qwen');
   const timeoutMs = Math.max(15000, Math.min(55000, num(env.MODEL_TIMEOUT_MS, 35000)));
 
