@@ -411,6 +411,10 @@ export async function onRequestPost({ request, env }) {
   const config = parseSheetConfig(body.config);
   const dl = num(env.DEVICE_DAILY_LIMIT, 30);
   const gl = num(env.GLOBAL_DAILY_LIMIT, 50);
+  const requestedReviewImageHash = String(body.review_image_hash || '').trim().toLowerCase();
+  if (requestedReviewImageHash && !/^[a-f0-9]{24}$/.test(requestedReviewImageHash)) {
+    throw publicError('高清复核照片校验值无效。', 400);
+  }
 
   const beforeUsage = await usageStatus(env.DB, p.sub);
   if (beforeUsage.global_used >= gl) throw publicError('今日服务总额度已用完。', 429);
@@ -447,7 +451,7 @@ export async function onRequestPost({ request, env }) {
           n: x.table_no, c: x.train_number, g: x.track_name,
           cm: x.train_modified, gm: x.track_modified, a: x.ambiguity
         })),
-        image_hash: await imageFingerprint(body.image),
+        image_hash: requestedReviewImageHash || await imageFingerprint(body.image),
         ver: String(env.TOKEN_VERSION || '1'),
         exp: Math.floor(Date.now() / 1000) + 600
       }, env.TOKEN_SECRET)
