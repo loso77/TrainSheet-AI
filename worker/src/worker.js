@@ -1,3 +1,5 @@
+import { buildVehicleMapPrompt, parseVehicleMapModelText } from '../../vehicle-map-core.js';
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -50,6 +52,7 @@ export default {
       if (url.pathname === "/auth" && request.method === "POST") return await auth(request,env,cors);
       if (url.pathname === "/me" && request.method === "GET") return await me(request,env,cors);
       if (url.pathname === "/recognize" && request.method === "POST") return await recognize(request,env,cors);
+      if (url.pathname === "/recognize-vehicle-map" && request.method === "POST") return await recognizeVehicleMap(request,env,cors);
       return json({error:"Not found"},404,cors);
     } catch (e) {
       // 不记录请求体、照片、令牌或密钥。
@@ -138,6 +141,76 @@ async function recognize(request, env, cors) {
   return json({rows:normalizeRows(parsed.rows),usage:{
     global_used:consumed.global_used,device_used:consumed.device_used,
     global_limit:num(env.GLOBAL_DAILY_LIMIT,50),device_limit:num(env.DEVICE_DAILY_LIMIT,30),expires_at:p.exp
+  }},200,cors);
+}
+
+async function recognizeVehicleMap(request, env, cors) {
+  const p = await requireToken(request,env);
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const [ipRate, deviceRate] = await Promise.all([
+    env.RECOGNIZE_IP_RATE.limit({key:ip}),
+    env.RECOGNIZE_DEVICE_RATE.limit({key:p.sub})
+  ]);
+  if (!ipRate.success || !deviceRate.success) return json({error:"三图识别请求过于频繁，请稍后再试。"},429,cors);
+
+  const maxBytes = num(env.VEHICLE_MAP_MAX_REQUEST_BYTES,24_000_000);
+  const len = Number(request.headers.get("Content-Length")||0);
+  if (len && len > maxBytes) return json({error:"三张照片的请求过大。"},413,cors);
+  const body = await readJsonLimited(request,maxBytes);
+  if (!Array.isArray(body.images) || body.images.length !== 3) return json({error:"请一次提交三张运行计划照片。"},400,cors);
+  for (const image of body.images) {
+    if (typeof image !== "string" || !/^data:image\/(jpeg|png|webp);base64,/.test(image)) return json({error:"图片格式不受支持。"},400,cors);
+  }
+
+  const deviceLimit = num(env.DEVICE_DAILY_LIMIT,30);
+  const globalLimit = num(env.GLOBAL_DAILY_LIMIT,50);
+  const before = await usageStatus(env,p.sub);
+  if (before.global_used >= globalLimit) return json({error:"今日服务总额度已用完。"},429,cors);
+  if (before.device_used >= deviceLimit) return json({error:"这台设备今日识别次数已用完。"},429,cors);
+
+  const timeoutMs = Math.max(30000,Math.min(90000,num(env.VEHICLE_MAP_TIMEOUT_MS,55000)));
+  const controller = new AbortController();
+  const timeout = setTimeout(()=>controller.abort("model-timeout"),timeoutMs);
+  const content = [{type:"text",text:buildVehicleMapPrompt()}];
+  for (const image of body.images) content.push({type:"image_url",image_url:{url:image,detail:"high"}});
+  let upstream;
+  try {
+    upstream = await fetch(env.OPENAI_API_URL||"https://api.openai.com/v1/chat/completions",{
+      method:"POST",signal:controller.signal,
+      headers:{"Authorization":`Bearer ${env.OPENAI_API_KEY}`,"Content-Type":"application/json"},
+      body:JSON.stringify({
+        model:env.OPENAI_MODEL||"gpt-4.1-mini",temperature:0,max_tokens:8192,
+        response_format:{type:"json_object"},messages:[{role:"user",content}]
+      })
+    });
+  } catch (error) {
+    if (error?.name === "AbortError" || String(error).includes("model-timeout")) {
+      const e=new Error();e.status=504;e.publicMessage=`三张照片识别超过${Math.round(timeoutMs/1000)}秒，本次未计次数。`;throw e;
+    }
+    throw error;
+  } finally { clearTimeout(timeout); }
+
+  const raw = await upstream.text();
+  let data={};try{data=JSON.parse(raw)}catch{}
+  if (!upstream.ok) {
+    const e=new Error();e.status=upstream.status===429?429:502;
+    e.publicMessage=data?.error?.message?"大模型接口错误："+data.error.message:"大模型接口调用失败。";
+    throw e;
+  }
+  let text=data?.choices?.[0]?.message?.content;
+  if(Array.isArray(text))text=text.map(x=>typeof x==="string"?x:(x?.text||"")).join("");
+  if(typeof text!=="string"){const e=new Error();e.status=502;e.publicMessage="大模型没有返回可解析结果，本次未计次数。";throw e}
+  const normalized=parseVehicleMapModelText(text);
+
+  const gate = env.USAGE_GATE.get(env.USAGE_GATE.idFromName("global"));
+  const consumedResp = await gate.fetch("https://gate/consume",{method:"POST",body:JSON.stringify({
+    device_id:p.sub,device_limit:deviceLimit,global_limit:globalLimit
+  })});
+  const consumed = await consumedResp.json();
+  if (!consumed.ok) return json({error:consumed.error},429,cors);
+  return json({...normalized,model_provider:"openai-compatible",model_name:env.OPENAI_MODEL||"gpt-4.1-mini",usage:{
+    global_used:consumed.global_used,device_used:consumed.device_used,
+    global_limit:globalLimit,device_limit:deviceLimit,expires_at:p.exp
   }},200,cors);
 }
 
