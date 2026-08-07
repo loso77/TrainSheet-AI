@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeVehicleMapResponse, parseVehicleMapModelText } from '../vehicle-map-core.js';
+import { buildVehicleMapPrompt, normalizeVehicleMapResponse, parseVehicleMapModelText } from '../vehicle-map-core.js';
 
 const rows = (start, end, vehicleStart = 1) => Array.from({ length: end - start + 1 }, (_, index) => [
   start + index,
@@ -72,5 +72,16 @@ assert.equal(rangeWinsConflict.pages[1].rows[0].effective_vehicle_number, '059')
 const parsed = parseVehicleMapModelText('```json\n{"pages":[]}\n```');
 assert.equal(parsed.pages.length, 3);
 assert.ok(parsed.pages.every(page => page.needs_review));
+
+const single = parseVehicleMapModelText(JSON.stringify({ pages: [
+  { x: 1, i: 'sihui', d: '2026-08-08', r: [[31, '103', '', '103', false, false, 0.99]] }
+] }), 1);
+assert.equal(single.pages.length, 1);
+assert.equal(single.pages[0].page_type, 'sihui');
+assert.equal(single.pages[0].date, '2026-08-08');
+assert.equal(single.pages[0].rows[0].effective_vehicle_number, '103');
+assert.match(buildVehicleMapPrompt(1), /收到1张照片/);
+assert.doesNotMatch(buildVehicleMapPrompt(1), /三张图都出现/);
+assert.match(buildVehicleMapPrompt(3), /三张图都出现/);
 
 console.log('vehicle-map-core tests passed');

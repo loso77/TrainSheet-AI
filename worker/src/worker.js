@@ -151,13 +151,13 @@ async function recognizeVehicleMap(request, env, cors) {
     env.RECOGNIZE_IP_RATE.limit({key:ip}),
     env.RECOGNIZE_DEVICE_RATE.limit({key:p.sub})
   ]);
-  if (!ipRate.success || !deviceRate.success) return json({error:"三图识别请求过于频繁，请稍后再试。"},429,cors);
+  if (!ipRate.success || !deviceRate.success) return json({error:"照片识别请求过于频繁，请稍后再试。"},429,cors);
 
   const maxBytes = num(env.VEHICLE_MAP_MAX_REQUEST_BYTES,24_000_000);
   const len = Number(request.headers.get("Content-Length")||0);
-  if (len && len > maxBytes) return json({error:"三张照片的请求过大。"},413,cors);
+  if (len && len > maxBytes) return json({error:"照片请求过大。"},413,cors);
   const body = await readJsonLimited(request,maxBytes);
-  if (!Array.isArray(body.images) || body.images.length !== 3) return json({error:"请一次提交三张运行计划照片。"},400,cors);
+  if (!Array.isArray(body.images) || ![1,3].includes(body.images.length)) return json({error:"请提交一张或三张运行计划照片。"},400,cors);
   for (const image of body.images) {
     if (typeof image !== "string" || !/^data:image\/(jpeg|png|webp);base64,/.test(image)) return json({error:"图片格式不受支持。"},400,cors);
   }
@@ -171,7 +171,7 @@ async function recognizeVehicleMap(request, env, cors) {
   const timeoutMs = Math.max(30000,Math.min(90000,num(env.VEHICLE_MAP_TIMEOUT_MS,55000)));
   const controller = new AbortController();
   const timeout = setTimeout(()=>controller.abort("model-timeout"),timeoutMs);
-  const content = [{type:"text",text:buildVehicleMapPrompt()}];
+  const content = [{type:"text",text:buildVehicleMapPrompt(body.images.length)}];
   for (const image of body.images) content.push({type:"image_url",image_url:{url:image,detail:"high"}});
   let upstream;
   try {
@@ -185,7 +185,7 @@ async function recognizeVehicleMap(request, env, cors) {
     });
   } catch (error) {
     if (error?.name === "AbortError" || String(error).includes("model-timeout")) {
-      const e=new Error();e.status=504;e.publicMessage=`三张照片识别超过${Math.round(timeoutMs/1000)}秒，本次未计次数。`;throw e;
+      const e=new Error();e.status=504;e.publicMessage=`${body.images.length}张照片识别超过${Math.round(timeoutMs/1000)}秒，本次未计次数。`;throw e;
     }
     throw error;
   } finally { clearTimeout(timeout); }
@@ -200,7 +200,7 @@ async function recognizeVehicleMap(request, env, cors) {
   let text=data?.choices?.[0]?.message?.content;
   if(Array.isArray(text))text=text.map(x=>typeof x==="string"?x:(x?.text||"")).join("");
   if(typeof text!=="string"){const e=new Error();e.status=502;e.publicMessage="大模型没有返回可解析结果，本次未计次数。";throw e}
-  const normalized=parseVehicleMapModelText(text);
+  const normalized=parseVehicleMapModelText(text,body.images.length);
 
   const gate = env.USAGE_GATE.get(env.USAGE_GATE.idFromName("global"));
   const consumedResp = await gate.fetch("https://gate/consume",{method:"POST",body:JSON.stringify({

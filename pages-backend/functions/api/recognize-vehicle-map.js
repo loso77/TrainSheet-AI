@@ -63,7 +63,7 @@ async function callModel(env, provider, images, timeoutMs) {
   const config = providerConfig(env, provider);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort('model-timeout'), timeoutMs);
-  const content = [{ type: 'text', text: buildVehicleMapPrompt() }];
+  const content = [{ type: 'text', text: buildVehicleMapPrompt(images.length) }];
   images.forEach(image => content.push({
     type: 'image_url',
     image_url: config.provider === 'openai-compatible' ? { url: image, detail: 'high' } : { url: image }
@@ -87,7 +87,7 @@ async function callModel(env, provider, images, timeoutMs) {
     });
   } catch (error) {
     if (error?.name === 'AbortError' || String(error).includes('model-timeout')) {
-      throw publicError(`三张照片识别超过${Math.round(timeoutMs / 1000)}秒，本次未计次数。`, 504);
+      throw publicError(`${images.length}张照片识别超过${Math.round(timeoutMs / 1000)}秒，本次未计次数。`, 504);
     }
     throw error;
   } finally {
@@ -116,8 +116,8 @@ export async function onRequestPost({ request, env }) {
   const principal = await requireToken(request, env);
   const maxBytes = num(env.VEHICLE_MAP_MAX_REQUEST_BYTES, 24_000_000);
   const body = await readJson(request, maxBytes);
-  if (!Array.isArray(body.images) || body.images.length !== 3) {
-    throw publicError('请一次提交三张运行计划照片。', 400);
+  if (!Array.isArray(body.images) || ![1, 3].includes(body.images.length)) {
+    throw publicError('请提交一张或三张运行计划照片。', 400);
   }
   body.images.forEach(validateImage);
 
@@ -125,7 +125,7 @@ export async function onRequestPost({ request, env }) {
     rateLimit(env.DB, 'vehicle-map-ip', ip(request), 3, 60),
     rateLimit(env.DB, 'vehicle-map-device', principal.sub, 2, 60)
   ]);
-  if (!ipOk || !deviceOk) throw publicError('三图识别请求过于频繁，请稍后再试。', 429);
+  if (!ipOk || !deviceOk) throw publicError('照片识别请求过于频繁，请稍后再试。', 429);
 
   const deviceLimit = num(env.DEVICE_DAILY_LIMIT, 30);
   const globalLimit = num(env.GLOBAL_DAILY_LIMIT, 50);
@@ -137,7 +137,7 @@ export async function onRequestPost({ request, env }) {
   const timeoutMs = Math.max(30000, Math.min(90000, num(env.VEHICLE_MAP_TIMEOUT_MS, 55000)));
   const started = Date.now();
   const modelResult = await callModel(env, provider, body.images, timeoutMs);
-  const normalized = parseVehicleMapModelText(modelResult.text);
+  const normalized = parseVehicleMapModelText(modelResult.text, body.images.length);
   const usage = await consumeDaily(env.DB, principal.sub, deviceLimit, globalLimit);
 
   return json({

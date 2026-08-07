@@ -85,7 +85,7 @@ function rawPages(parsed) {
   return [];
 }
 
-function normalizePage(raw, fallbackImageIndex) {
+function normalizePage(raw, fallbackImageIndex, expectedImageCount) {
   const rows = rawPageRows(raw);
   const requestedId = pageIdFromText(raw?.i ?? raw?.page_type ?? raw?.depot ?? raw?.maintenance_center);
   const inferredId = pageIdFromRows(rows);
@@ -159,7 +159,7 @@ function normalizePage(raw, fallbackImageIndex) {
   }
 
   return {
-    image_index: Number.isInteger(imageIndex) && imageIndex >= 1 && imageIndex <= 3 ? imageIndex : fallbackImageIndex,
+    image_index: Number.isInteger(imageIndex) && imageIndex >= 1 && imageIndex <= expectedImageCount ? imageIndex : fallbackImageIndex,
     page_type: pageId,
     maintenance_center: page?.label || String(raw?.maintenance_center ?? raw?.depot ?? '').trim(),
     date: dateValue(raw?.d ?? raw?.date ?? raw?.service_date ?? raw?.document_date),
@@ -169,15 +169,16 @@ function normalizePage(raw, fallbackImageIndex) {
   };
 }
 
-export function normalizeVehicleMapResponse(parsed) {
+export function normalizeVehicleMapResponse(parsed, expectedImageCount = 3) {
+  const imageCount = expectedImageCount === 1 ? 1 : 3;
   const sourcePages = rawPages(parsed);
   const byImage = new Map();
   sourcePages.forEach((page, index) => {
-    const normalized = normalizePage(page, index + 1);
+    const normalized = normalizePage(page, index + 1, imageCount);
     if (!byImage.has(normalized.image_index)) byImage.set(normalized.image_index, normalized);
   });
 
-  const pages = [1, 2, 3].map(imageIndex => byImage.get(imageIndex) || {
+  const pages = Array.from({ length: imageCount }, (_, index) => index + 1).map(imageIndex => byImage.get(imageIndex) || {
     image_index: imageIndex, page_type: '', maintenance_center: '', date: '', rows: [],
     needs_review: true, review_reasons: ['模型未返回这张照片']
   });
@@ -218,7 +219,7 @@ export function normalizeVehicleMapResponse(parsed) {
   if (dateConflict) {
     for (const page of pages) {
       page.needs_review = true;
-      page.review_reasons.push('三张照片的运行日期不一致');
+      page.review_reasons.push('照片的运行日期不一致');
       page.review_reasons = [...new Set(page.review_reasons)];
     }
   }
@@ -230,15 +231,25 @@ export function normalizeVehicleMapResponse(parsed) {
   };
 }
 
-export function buildVehicleMapPrompt() {
-  return `你是北京地铁1号线“列车每日运行计划”数据提取助手。一次会收到3张照片，顺序不固定。只读取每张照片左侧的表号、车号、变更车号，以及右上角运行日期和页脚检修中心。
+export function buildVehicleMapPrompt(expectedImageCount = 3) {
+  const imageCount = expectedImageCount === 1 ? 1 : 3;
+  const receiptRule = imageCount === 1
+    ? '本次只收到1张照片，用于新建或更新该照片所属的一个表号范围。'
+    : '本次收到3张照片，顺序不固定，用于完整建立当天三个表号范围。';
+  const dateRule = imageCount === 1
+    ? '运行日期在右上角，必须据实识别并统一输出YYYY-MM-DD。'
+    : '运行日期在右上角，统一输出YYYY-MM-DD。三张图通常是同一天，但不得擅自改成一致。';
+  const finalCheck = imageCount === 1
+    ? '输出前检查收到的1张图已返回、图片序号为1、表号范围正确。'
+    : '输出前检查三张图都出现、图片序号不重复、表号范围正确。';
+  return `你是北京地铁1号线“列车每日运行计划”数据提取助手。${receiptRule}只读取每张照片左侧的表号、车号、变更车号，以及右上角运行日期和页脚检修中心。
 
 三种页面及合法表号：
 - gucheng：页脚含“古城检修”，表号01至28。
 - sihui：页脚含“四惠检修”，表号31至61。
 - tuqiao：页脚含“土桥段”或“1号线检修中心土桥段”，表号71至100。
 
-页面身份首先按左侧表号范围判断，图片顺序不能作为依据。左下角检修中心文字仅作为辅助校验：它有时可能为空、未填写、被裁掉或看不清；这种情况下仍须根据表号范围正常判断页面，不能因此拒绝识别。只有页脚文字与表号范围明确冲突时才降低置信度。运行日期在右上角，统一输出YYYY-MM-DD。三张图通常是同一天，但不得擅自改成一致。
+页面身份首先按左侧表号范围判断，图片顺序不能作为依据。左下角检修中心文字仅作为辅助校验：它有时可能为空、未填写、被裁掉或看不清；这种情况下仍须根据表号范围正常判断页面，不能因此拒绝识别。只有页脚文字与表号范围明确冲突时才降低置信度。${dateRule}
 
 只读取左侧三列：表号、印刷车号、变更车号。不要读取右侧周检车、段备、月修、车组数、其他说明等区域的数字。车号为000至999，必须保留前导零。
 
@@ -247,10 +258,10 @@ export function buildVehicleMapPrompt() {
 只返回紧凑JSON，不要Markdown、解释或额外字段：
 {"pages":[{"x":1,"i":"gucheng","d":"2026-08-05","r":[[1,"059","","059",false,false,0.98]]}]}
 x=图片序号（按收到顺序从1开始），i=页面身份，d=日期，r中每行依次为[表号,原车号,变更车号,最终车号,有划改或手写变更,最终值不确定,置信度]。
-每张图只返回其合法范围内的全部表号，每个表号恰好一次；空白也必须返回空字符串。输出前检查三张图都出现、图片序号不重复、表号范围正确。`;
+每张图只返回其合法范围内的全部表号，每个表号恰好一次；空白也必须返回空字符串。${finalCheck}`;
 }
 
-export function parseVehicleMapModelText(text) {
+export function parseVehicleMapModelText(text, expectedImageCount = 3) {
   const cleaned = String(text ?? '').trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
   let parsed;
   try { parsed = JSON.parse(cleaned); } catch {
@@ -259,5 +270,5 @@ export function parseVehicleMapModelText(text) {
     error.publicMessage = error.message;
     throw error;
   }
-  return normalizeVehicleMapResponse(parsed);
+  return normalizeVehicleMapResponse(parsed, expectedImageCount);
 }
