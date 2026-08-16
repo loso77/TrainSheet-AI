@@ -85,7 +85,7 @@ function rawPages(parsed) {
   return [];
 }
 
-function normalizePage(raw, fallbackImageIndex, expectedImageCount) {
+function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
   const rows = rawPageRows(raw);
   const requestedId = pageIdFromText(raw?.i ?? raw?.page_type ?? raw?.depot ?? raw?.maintenance_center);
   const inferredId = pageIdFromRows(rows);
@@ -159,7 +159,7 @@ function normalizePage(raw, fallbackImageIndex, expectedImageCount) {
   }
 
   return {
-    image_index: Number.isInteger(imageIndex) && imageIndex >= 1 && imageIndex <= expectedImageCount ? imageIndex : fallbackImageIndex,
+    image_index: Number.isInteger(imageIndex) && imageIndex >= 1 && imageIndex <= imageCount ? imageIndex : fallbackImageIndex,
     page_type: pageId,
     maintenance_center: page?.label || String(raw?.maintenance_center ?? raw?.depot ?? '').trim(),
     date: dateValue(raw?.d ?? raw?.date ?? raw?.service_date ?? raw?.document_date),
@@ -170,7 +170,7 @@ function normalizePage(raw, fallbackImageIndex, expectedImageCount) {
 }
 
 export function normalizeVehicleMapResponse(parsed, expectedImageCount = 3) {
-  const imageCount = expectedImageCount === 1 ? 1 : 3;
+  const imageCount = Math.max(1, Math.min(3, Number(expectedImageCount) || 3));
   const sourcePages = rawPages(parsed);
   const byImage = new Map();
   sourcePages.forEach((page, index) => {
@@ -219,7 +219,7 @@ export function normalizeVehicleMapResponse(parsed, expectedImageCount = 3) {
   if (dateConflict) {
     for (const page of pages) {
       page.needs_review = true;
-      page.review_reasons.push('照片的运行日期不一致');
+      page.review_reasons.push('所选照片的运行日期不一致');
       page.review_reasons = [...new Set(page.review_reasons)];
     }
   }
@@ -232,16 +232,18 @@ export function normalizeVehicleMapResponse(parsed, expectedImageCount = 3) {
 }
 
 export function buildVehicleMapPrompt(expectedImageCount = 3) {
-  const imageCount = expectedImageCount === 1 ? 1 : 3;
+  const imageCount = Math.max(1, Math.min(3, Number(expectedImageCount) || 3));
   const receiptRule = imageCount === 1
     ? '本次只收到1张照片，用于新建或更新该照片所属的一个表号范围。'
-    : '本次收到3张照片，顺序不固定，用于完整建立当天三个表号范围。';
+    : imageCount === 3
+      ? '本次收到3张照片，顺序不固定，用于完整建立当天三个表号范围。'
+      : `本次收到${imageCount}张照片，顺序不固定，用于新建或同时更新这些照片所属的表号范围。`;
   const dateRule = imageCount === 1
     ? '运行日期在右上角，必须据实识别并统一输出YYYY-MM-DD。'
-    : '运行日期在右上角，统一输出YYYY-MM-DD。三张图通常是同一天，但不得擅自改成一致。';
+    : `运行日期在右上角，统一输出YYYY-MM-DD。所选${imageCount}张图应为同一天，但不得擅自改成一致。`;
   const finalCheck = imageCount === 1
     ? '输出前检查收到的1张图已返回、图片序号为1、表号范围正确。'
-    : '输出前检查三张图都出现、图片序号不重复、表号范围正确。';
+    : `输出前检查收到的${imageCount}张图都已返回、图片序号不重复、表号范围正确。`;
   return `你是北京地铁1号线“列车每日运行计划”数据提取助手。${receiptRule}只读取每张照片左侧的表号、车号、变更车号，以及右上角运行日期和页脚检修中心。
 
 三种页面及合法表号：

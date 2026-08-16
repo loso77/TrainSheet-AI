@@ -81,7 +81,24 @@ assert.equal(single.pages[0].page_type, 'sihui');
 assert.equal(single.pages[0].date, '2026-08-08');
 assert.equal(single.pages[0].rows[0].effective_vehicle_number, '103');
 assert.match(buildVehicleMapPrompt(1), /收到1张照片/);
-assert.doesNotMatch(buildVehicleMapPrompt(1), /三张图都出现/);
-assert.match(buildVehicleMapPrompt(3), /三张图都出现/);
+assert.doesNotMatch(buildVehicleMapPrompt(1), /收到的3张图/);
+
+const partial = normalizeVehicleMapResponse({ pages: [
+  { x: 1, i: 'gucheng', d: '2026-08-16', r: [[1, '059', '', '059', false, false, 0.99]] },
+  { x: 2, i: 'sihui', d: '2026-08-16', r: [[31, '103', '', '103', false, false, 0.99]] }
+] }, 2);
+assert.equal(partial.pages.length, 2);
+assert.equal(partial.date, '2026-08-16');
+assert.deepEqual(partial.pages.map(page => page.page_type), ['gucheng', 'sihui']);
+
+const missingSecond = parseVehicleMapModelText('{"pages":[{"x":1,"i":"gucheng","d":"2026-08-16","r":[]}]}', 2);
+assert.equal(missingSecond.pages.length, 2);
+assert.equal(missingSecond.pages[1].needs_review, true);
+assert.ok(missingSecond.pages[1].review_reasons.includes('模型未返回这张照片'));
+
+assert.match(buildVehicleMapPrompt(2), /收到2张照片/);
+assert.match(buildVehicleMapPrompt(2), /收到的2张图都已返回/);
+assert.match(buildVehicleMapPrompt(3), /收到3张照片/);
+assert.match(buildVehicleMapPrompt(3), /收到的3张图都已返回/);
 
 console.log('vehicle-map-core tests passed');

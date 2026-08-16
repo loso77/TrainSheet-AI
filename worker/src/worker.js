@@ -151,13 +151,13 @@ async function recognizeVehicleMap(request, env, cors) {
     env.RECOGNIZE_IP_RATE.limit({key:ip}),
     env.RECOGNIZE_DEVICE_RATE.limit({key:p.sub})
   ]);
-  if (!ipRate.success || !deviceRate.success) return json({error:"照片识别请求过于频繁，请稍后再试。"},429,cors);
+  if (!ipRate.success || !deviceRate.success) return json({error:"车号识别请求过于频繁，请稍后再试。"},429,cors);
 
   const maxBytes = num(env.VEHICLE_MAP_MAX_REQUEST_BYTES,24_000_000);
   const len = Number(request.headers.get("Content-Length")||0);
   if (len && len > maxBytes) return json({error:"照片请求过大。"},413,cors);
   const body = await readJsonLimited(request,maxBytes);
-  if (!Array.isArray(body.images) || ![1,3].includes(body.images.length)) return json({error:"请提交一张或三张运行计划照片。"},400,cors);
+  if (!Array.isArray(body.images) || body.images.length < 1 || body.images.length > 3) return json({error:"请一次提交1至3张运行计划照片。"},400,cors);
   for (const image of body.images) {
     if (typeof image !== "string" || !/^data:image\/(jpeg|png|webp);base64,/.test(image)) return json({error:"图片格式不受支持。"},400,cors);
   }

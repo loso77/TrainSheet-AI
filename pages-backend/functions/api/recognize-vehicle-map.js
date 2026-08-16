@@ -116,8 +116,8 @@ export async function onRequestPost({ request, env }) {
   const principal = await requireToken(request, env);
   const maxBytes = num(env.VEHICLE_MAP_MAX_REQUEST_BYTES, 24_000_000);
   const body = await readJson(request, maxBytes);
-  if (!Array.isArray(body.images) || ![1, 3].includes(body.images.length)) {
-    throw publicError('请提交一张或三张运行计划照片。', 400);
+  if (!Array.isArray(body.images) || body.images.length < 1 || body.images.length > 3) {
+    throw publicError('请一次提交1至3张运行计划照片。', 400);
   }
   body.images.forEach(validateImage);
 
@@ -125,7 +125,7 @@ export async function onRequestPost({ request, env }) {
     rateLimit(env.DB, 'vehicle-map-ip', ip(request), 3, 60),
     rateLimit(env.DB, 'vehicle-map-device', principal.sub, 2, 60)
   ]);
-  if (!ipOk || !deviceOk) throw publicError('照片识别请求过于频繁，请稍后再试。', 429);
+  if (!ipOk || !deviceOk) throw publicError('车号识别请求过于频繁，请稍后再试。', 429);
 
   const deviceLimit = num(env.DEVICE_DAILY_LIMIT, 30);
   const globalLimit = num(env.GLOBAL_DAILY_LIMIT, 50);
