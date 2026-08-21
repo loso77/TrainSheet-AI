@@ -22,6 +22,38 @@ function vehicleNumber(value) {
   return raw.padStart(3, '0');
 }
 
+function changeSourceZone(value) {
+  const text = String(value ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  const noneValues = new Set(['', 'none', 'nochange', '无', '未变更']);
+  const mainValues = new Set([
+    'main', 'primary', 'formal', 'target', 'maincell', 'primarycell', 'formalcell', 'targetcell',
+    '正式', '正式栏', '正式格', '主表', '目标格', '目标区', '目标区内'
+  ]);
+  const otherValues = new Set([
+    'other', 'secondary', 'reserve', 'inspection', 'note', 'othercell', 'secondarycell',
+    '预备', '预备栏', '周检', '周检栏', '备注', '备注栏', '其他', '其他栏位', '非目标区'
+  ]);
+  if (noneValues.has(text)) return 'none';
+  if (mainValues.has(text)) return 'main';
+  if (otherValues.has(text)) return 'other';
+  return 'uncertain';
+}
+
+function planCodeValue(value) {
+  const text = String(value ?? '').trim().toUpperCase();
+  const match = text.match(/\b(?:SX|PR|SGJR)[A-Z0-9-]*\d[A-Z0-9-]*\b/);
+  return match ? match[0] : '';
+}
+
+function scheduleTypeValue(value, planCode = '') {
+  const text = String(value ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (['weekend', 'doubleholiday', 'doubleoff', '双休', '双休日', '节假日'].includes(text)) return 'weekend';
+  if (['weekday', 'workday', '平日', '工作日'].includes(text)) return 'weekday';
+  if (/^SX/.test(planCode)) return 'weekend';
+  if (/^PR/.test(planCode)) return 'weekday';
+  return '';
+}
+
 function dateValue(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return '';
@@ -58,18 +90,30 @@ function pageIdFromRows(rows) {
 
 function compactRow(row) {
   if (Array.isArray(row)) {
-    return {
+    const compact = {
       table_no: row[0], original_vehicle_number: row[1], changed_vehicle_number: row[2],
       effective_vehicle_number: row[3], vehicle_modified: asBoolean(row[4]),
-      ambiguity: asBoolean(row[5]), confidence: row[6], note: row[7]
+      ambiguity: asBoolean(row[5]), confidence: row[6]
     };
+    if (row.length >= 9) {
+      compact.change_source_zone = row[7];
+      compact.change_in_primary_vehicle_cell = asBoolean(row[8]);
+      compact.note = row[9];
+    } else {
+      // 兼容旧模型曾在第8项返回备注的格式。旧格式没有单元格归属证据。
+      compact.note = row[7];
+    }
+    return compact;
   }
   if (!row || typeof row !== 'object') return {};
-  if ('n' in row || 'o' in row || 'e' in row) {
+  if ('n' in row || 'o' in row || 'e' in row || 's' in row || 'g' in row) {
     return {
       table_no: row.n, original_vehicle_number: row.o, changed_vehicle_number: row.c,
       effective_vehicle_number: row.e, vehicle_modified: asBoolean(row.m),
-      ambiguity: asBoolean(row.a), confidence: row.p, note: row.note
+      ambiguity: asBoolean(row.a), confidence: row.p,
+      change_source_zone: row.s,
+      change_in_primary_vehicle_cell: asBoolean(row.g),
+      note: row.note
     };
   }
   return row;
@@ -93,6 +137,13 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
   const pageId = inferredId || requestedId;
   const page = PAGE_BY_ID.get(pageId);
   const imageIndex = Number(raw?.x ?? raw?.image_index ?? fallbackImageIndex);
+  const planCode = planCodeValue(
+    raw?.p ?? raw?.plan_code ?? raw?.planCode ?? raw?.plan_number ?? raw?.document_code ?? raw?.document_title ?? raw?.title
+  );
+  const scheduleType = scheduleTypeValue(
+    raw?.t ?? raw?.schedule_type ?? raw?.plan_type ?? raw?.timetable_type,
+    planCode
+  );
   const pageReasons = [];
   if (!page) pageReasons.push('无法判断表号范围或页面类型');
   if (requestedId && inferredId && requestedId !== inferredId) pageReasons.push('检修中心与表号范围不一致');
@@ -108,18 +159,51 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
       continue;
     }
     const original = vehicleNumber(source.original_vehicle_number ?? source.original_train_number ?? source.vehicle_number);
-    const changed = vehicleNumber(source.changed_vehicle_number ?? source.changed_train_number ?? source.replacement_vehicle_number);
+    const reportedChanged = vehicleNumber(source.changed_vehicle_number ?? source.changed_train_number ?? source.replacement_vehicle_number);
     const reportedEffective = vehicleNumber(source.effective_vehicle_number ?? source.effective_train_number);
-    const effective = reportedEffective || changed || original;
-    const modified = asBoolean(source.vehicle_modified ?? source.train_modified) || Boolean(changed);
+    const markedModified = asBoolean(source.vehicle_modified ?? source.train_modified);
+    const reportedDifferent = Boolean(reportedEffective && original && reportedEffective !== original);
+    const claimsModification = markedModified || Boolean(reportedChanged) || reportedDifferent;
+    const sourceZone = changeSourceZone(source.change_source_zone ?? source.source_zone ?? source.vehicle_change_source);
+    const changeInPrimaryCell = asBoolean(
+      source.change_in_primary_vehicle_cell
+      ?? source.modification_in_target_cell
+      ?? source.change_inside_target_cell
+    );
+    const trustedModification = claimsModification && sourceZone === 'main' && changeInPrimaryCell;
+    const explicitlyOutsideTarget = claimsModification && sourceZone === 'other' && !changeInPrimaryCell;
+    const ignoredChanged = !trustedModification
+      ? (reportedChanged || (reportedDifferent ? reportedEffective : ''))
+      : '';
+    const changed = trustedModification
+      ? (reportedChanged || (reportedDifferent ? reportedEffective : ''))
+      : '';
+    const effective = trustedModification
+      ? (reportedEffective || changed || original)
+      : claimsModification
+        ? original
+        : (reportedEffective || original);
+    const modified = trustedModification;
     const ambiguous = asBoolean(source.ambiguity);
     const score = confidence(source.confidence);
     const reasons = Array.isArray(source.review_reasons) ? source.review_reasons.map(String) : [];
+    const noteParts = [String(source.note ?? '').trim()].filter(Boolean);
+    if (claimsModification && !trustedModification) {
+      if (explicitlyOutsideTarget) {
+        noteParts.push(ignoredChanged
+          ? `同行其他栏位的疑似车号${ignoredChanged}已忽略`
+          : '同行其他栏位的划改已忽略');
+      } else {
+        reasons.push(ignoredChanged
+          ? `疑似变更车号${ignoredChanged}的位置无法确认，已保留正式车号`
+          : '划改位置无法确认，已保留正式车号');
+      }
+    }
     if (!effective) reasons.push('车号为空');
     else if (!/^\d{3}$/.test(effective)) reasons.push('车号格式无效');
     if (original && !/^\d{3}$/.test(original)) reasons.push('原车号格式无效');
     if (changed && !/^\d{3}$/.test(changed)) reasons.push('变更车号格式无效');
-    if (modified) reasons.push('存在划掉或手写变更');
+    if (modified) reasons.push('存在正式变更车号填写或手写划改');
     if (ambiguous) reasons.push('模型认为最终值不确定');
     if (score < 0.88) reasons.push('最终值置信度不足');
     map.set(tableNo, {
@@ -128,11 +212,14 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
       changed_vehicle_number: changed,
       effective_vehicle_number: effective,
       vehicle_modified: modified,
+      change_source_zone: sourceZone,
+      change_in_primary_vehicle_cell: changeInPrimaryCell,
+      ignored_changed_vehicle_number: ignoredChanged,
       ambiguity: ambiguous,
       confidence: score,
       needs_review: false,
       review_reasons: reasons,
-      note: String(source.note ?? '').trim()
+      note: [...new Set(noteParts)].join('；')
     });
   }
 
@@ -163,6 +250,8 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
     page_type: pageId,
     maintenance_center: page?.label || String(raw?.maintenance_center ?? raw?.depot ?? '').trim(),
     date: dateValue(raw?.d ?? raw?.date ?? raw?.service_date ?? raw?.document_date),
+    plan_code: planCode,
+    schedule_type: scheduleType,
     rows: normalizedRows,
     needs_review: pageReasons.length > 0,
     review_reasons: pageReasons
@@ -215,6 +304,8 @@ export function normalizeVehicleMapResponse(parsed, expectedImageCount = 3) {
 
   const dates = pages.map(page => page.date).filter(Boolean);
   const uniqueDates = [...new Set(dates)];
+  const planCodes = [...new Set(pages.map(page => page.plan_code).filter(Boolean))];
+  const scheduleTypes = [...new Set(pages.map(page => page.schedule_type).filter(Boolean))];
   const dateConflict = uniqueDates.length > 1;
   if (dateConflict) {
     for (const page of pages) {
@@ -227,6 +318,10 @@ export function normalizeVehicleMapResponse(parsed, expectedImageCount = 3) {
     pages,
     date: uniqueDates.length === 1 ? uniqueDates[0] : '',
     date_conflict: dateConflict,
+    plan_code: planCodes.length === 1 ? planCodes[0] : '',
+    plan_codes: planCodes,
+    schedule_type: scheduleTypes.length === 1 ? scheduleTypes[0] : '',
+    schedule_types: scheduleTypes,
     needs_review: pages.some(page => page.needs_review || page.rows.some(row => row.needs_review))
   };
 }
@@ -244,7 +339,7 @@ export function buildVehicleMapPrompt(expectedImageCount = 3) {
   const finalCheck = imageCount === 1
     ? '输出前检查收到的1张图已返回、图片序号为1、表号范围正确。'
     : `输出前检查收到的${imageCount}张图都已返回、图片序号不重复、表号范围正确。`;
-  return `你是北京地铁1号线“列车每日运行计划”数据提取助手。${receiptRule}只读取每张照片左侧的表号、车号、变更车号，以及右上角运行日期和页脚检修中心。
+  return `你是北京地铁1号线“列车每日运行计划”数据提取助手。${receiptRule}只读取每张照片左侧的正式表号、正式车号、正式变更车号，以及右上角运行日期和页脚检修中心。
 
 三种页面及合法表号：
 - gucheng：页脚含“古城检修”，表号01至28。
@@ -253,13 +348,22 @@ export function buildVehicleMapPrompt(expectedImageCount = 3) {
 
 页面身份首先按左侧表号范围判断，图片顺序不能作为依据。左下角检修中心文字仅作为辅助校验：它有时可能为空、未填写、被裁掉或看不清；这种情况下仍须根据表号范围正常判断页面，不能因此拒绝识别。只有页脚文字与表号范围明确冲突时才降低置信度。${dateRule}
 
-只读取左侧三列：表号、印刷车号、变更车号。不要读取右侧周检车、段备、月修、车组数、其他说明等区域的数字。车号为000至999，必须保留前导零。
+目标数据区必须按竖向表格边界定位，而不是按整条横行联想：
+- 目标区仅为图片最左侧连续三列，即第一组“表号｜车号｜变更车号”，其右边界是第一个“变更车号”列的右框线。
+- 页面中部从“预备”开始的第二组“车号｜变更车号”，以及右侧周检车、段备、月修、车组数、其他说明等区域，全部属于非目标区。
+- 同一横行右侧出现划线、手写数字或重写，不代表左侧正式表号发生变更；不得把横向相邻但位于其他列的数字归给正式表号。
+- 先沿最左侧“表号”列找到正式表号，再只读取该行目标区内紧邻的正式车号格和正式变更车号格。车号为000至999，必须保留前导零。
 
-修改规则：被横线、斜线、叉号或涂抹划掉的旧值无效；同一行旁边最后一个未划掉的手写或变更车号才是有效值。o保存能确认的印刷/原车号，c保存最后未划掉的变更车号，e保存最终有效车号。只要存在划改或手写变更，m=true。看不清最终值时留空，a=true，禁止猜测。
+修改规则只适用于目标区，以下两种情况都独立构成正式变更，不要求同时出现：
+1. 左侧第一组正式“变更车号”格内明确填写了未划掉的新车号；即使正式印刷车号没有被划掉，也以该变更车号为最终车号。
+2. 正式车号格内的旧值被划线、斜线、叉号或涂抹，并在同一正式车号格内写入了可确认的新值。
+目标区之外的划改必须忽略。尤其不得把“预备”之后第二组车号或变更车号格内的数字用于左侧正式表号。o保存能确认的正式印刷/原车号，c仅保存上述两种目标区有效变更的最终新车号，e保存最终有效车号。m表示正式目标区存在有效划改或变更车号填写。s表示变更证据位置：main=目标区内，other=仅在预备/周检/备注等非目标区，none=没有变更，uncertain=无法确认。g在变更证据明确位于正式车号格或左侧第一个正式“变更车号”格时为true。若s不是main或g不是true，必须令c为空、e=o、m=false；看不清正式最终值时留空，a=true，禁止猜测。
+
+标题与运行图类型：逐张读取表格顶部“列车运行计划单”后的标题代号。p保存完整代号，例如SX2608、PR2607、SGJR2606。t只允许weekend、weekday或空字符串：SX明确对应weekend，PR明确对应weekday；SGJR本身是中性代号，若该页没有其他明确证据则t留空，不得仅因SGJR猜测类型。
 
 只返回紧凑JSON，不要Markdown、解释或额外字段：
-{"pages":[{"x":1,"i":"gucheng","d":"2026-08-05","r":[[1,"059","","059",false,false,0.98]]}]}
-x=图片序号（按收到顺序从1开始），i=页面身份，d=日期，r中每行依次为[表号,原车号,变更车号,最终车号,有划改或手写变更,最终值不确定,置信度]。
+{"pages":[{"x":1,"i":"gucheng","d":"2026-08-05","p":"PR2607","t":"weekday","r":[[1,"059","","059",false,false,0.98,"none",false]]}]}
+x=图片序号（按收到顺序从1开始），i=页面身份，d=日期，p=标题代号，t=运行图类型，r中每行依次为[表号,原车号,变更车号,最终车号,正式目标区存在有效变更,最终值不确定,置信度,变更证据位置,变更是否位于正式目标格]。
 每张图只返回其合法范围内的全部表号，每个表号恰好一次；空白也必须返回空字符串。${finalCheck}`;
 }
 
