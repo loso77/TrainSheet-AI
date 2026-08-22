@@ -51,6 +51,21 @@ assert.equal(table76.effective_vehicle_number, '103');
 assert.equal(table76.vehicle_modified, true);
 assert.equal(table76.needs_review, true);
 
+// 正式变更格有手写痕迹但最终数字读不清时，必须保留原车号并进入人工确认，不能静默判为未修改。
+const unreadableFormalChange = normalizeVehicleMapResponse({ pages: [
+  { x: 1, i: 'tuqiao', d: '2026-08-23', r: [
+    [83, '105', '', '105', true, true, 0.62, 'main', true]
+  ] }
+] }, 1);
+const table83 = unreadableFormalChange.pages[0].rows.find(row => row.table_no === 83);
+assert.equal(table83.original_vehicle_number, '105');
+assert.equal(table83.changed_vehicle_number, '');
+assert.equal(table83.effective_vehicle_number, '105');
+assert.equal(table83.vehicle_modified, true);
+assert.equal(table83.needs_review, true);
+assert.ok(table83.review_reasons.includes('存在正式变更车号填写或手写划改'));
+assert.ok(table83.review_reasons.includes('模型认为最终值不确定'));
+
 const sameRowOtherColumn = normalizeVehicleMapResponse({ pages: [
   { x: 1, i: 'tuqiao', d: '2026-08-22', r: [
     [86, '109', '082', '082', true, false, 0.96, 'other', false]
@@ -172,6 +187,9 @@ assert.match(buildVehicleMapPrompt(3), /不得把横向相邻但位于其他列�
 assert.match(buildVehicleMapPrompt(3), /变更证据位置/);
 assert.match(buildVehicleMapPrompt(3), /即使正式印刷车号没有被划掉，也以该变更车号为最终车号/);
 assert.match(buildVehicleMapPrompt(3), /两种情况都独立构成正式变更，不要求同时出现/);
+assert.match(buildVehicleMapPrompt(3), /先检查每一行正式变更车号格是否存在任何非印刷笔迹/);
+assert.match(buildVehicleMapPrompt(3), /不得因为手写数字被斜线穿过、与表格线重叠或暂时读不清就判为无修改/);
+assert.match(buildVehicleMapPrompt(3), /无法确认最终数字时.*m=true.*a=true.*s=main.*g=true/);
 assert.match(buildVehicleMapPrompt(3), /p保存完整代号，例如SX2608、PR2607、SGJR2606/);
 assert.match(buildVehicleMapPrompt(3), /SGJR本身是中性代号/);
 
