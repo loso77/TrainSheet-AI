@@ -189,12 +189,18 @@ assert.match(buildVehicleMapPrompt(2), /收到的2张图都已返回/);
 assert.match(buildVehicleMapPrompt(3), /收到3张照片/);
 assert.match(buildVehicleMapPrompt(3), /收到的3张图都已返回/);
 assert.match(buildVehicleMapPrompt(3), /不得把横向相邻但位于其他列的数字归给正式表号/);
+assert.match(buildVehicleMapPrompt(3), /正式“变更车号”表头下方有时会被细竖线分成多个连续填写小格/);
+assert.match(buildVehicleMapPrompt(3), /不得越过正式变更车号栏的最外侧右框线/);
 assert.match(buildVehicleMapPrompt(3), /变更证据位置/);
 assert.match(buildVehicleMapPrompt(3), /即使正式印刷车号没有被划掉，也以该变更车号为最终车号/);
 assert.match(buildVehicleMapPrompt(3), /两种情况都独立构成正式变更，不要求同时出现/);
 assert.match(buildVehicleMapPrompt(3), /先检查每一行正式变更车号格是否存在任何非印刷笔迹/);
 assert.match(buildVehicleMapPrompt(3), /不得因为手写数字被斜线穿过、与表格线重叠或暂时读不清就判为无修改/);
 assert.match(buildVehicleMapPrompt(3), /无法确认最终数字时.*m=true.*a=true.*s=main.*g=true/);
+assert.match(buildVehicleMapPrompt(3), /按从左到右读取修改顺序/);
+assert.match(buildVehicleMapPrompt(3), /原车号063.*依次写入046、054.*c和e都必须返回054/);
+assert.match(buildVehicleMapPrompt(3), /多次修改时优先只包住最右侧最终值所在小格/);
+assert.doesNotMatch(buildVehicleMapPrompt(3), /左侧第一个正式[“\"]?变更车号/);
 assert.match(buildVehicleMapPrompt(3), /p保存完整代号，例如SX2608、PR2607、SGJR2606/);
 assert.match(buildVehicleMapPrompt(3), /SGJR本身是中性代号/);
 assert.match(buildVehicleMapPrompt(1), /目标单元格边界/);
@@ -210,6 +216,21 @@ const handwritingBbox = normalizeVehicleMapResponse({ pages: [
 const handwritingRow = handwritingBbox.pages[0].rows.find(row => row.table_no === 83);
 assert.equal(handwritingRow.changed_vehicle_number, '058');
 assert.deepEqual(handwritingRow.change_cell_bbox, [318, 462, 446, 512]);
+
+const repeatedChange = normalizeVehicleMapResponse({ pages: [
+  {
+    x: 1,
+    i: 'gucheng',
+    d: '2026-08-24',
+    r: [[7, '063', '054', '054', true, false, 0.94, 'main', true, [392, 314, 458, 348]]]
+  }
+] }, 1);
+const table07 = repeatedChange.pages[0].rows.find(row => row.table_no === 7);
+assert.equal(table07.original_vehicle_number, '063');
+assert.equal(table07.changed_vehicle_number, '054');
+assert.equal(table07.effective_vehicle_number, '054');
+assert.equal(table07.vehicle_modified, true);
+assert.deepEqual(table07.change_cell_bbox, [392, 314, 458, 348]);
 
 const handwritingPrompt = vehicleHandwritingExamplesPrompt([
   { confirmed_value: '058', original_value: '105', model_value: '052' }
