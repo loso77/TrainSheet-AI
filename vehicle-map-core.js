@@ -6,6 +6,12 @@ export const VEHICLE_MAP_PAGES = [
 
 const PAGE_BY_ID = new Map(VEHICLE_MAP_PAGES.map(page => [page.id, page]));
 
+// 每张独立运行计划表中，正式“表号｜车号｜变更车号”始终位于左侧。
+// 坐标限制相对于该表在照片中的外框计算，因此同一张照片横拍或竖拍
+// 三张表时，第二、第三张表不会被误判成“整张照片右侧的远处竖列”。
+const PRIMARY_CHANGE_CELL_MAX_X_RATIO = 0.52;
+const PRIMARY_CHANGE_CELL_MAX_WIDTH_RATIO = 0.24;
+
 function asBoolean(value) {
   return value === true || value === 1 || String(value).toLowerCase() === 'true';
 }
@@ -34,6 +40,24 @@ function normalizedCellBbox(value) {
   const [x1, y1, x2, y2] = box.map(number => Math.max(0, Math.min(1000, Math.round(number))));
   if (x2 - x1 < 5 || y2 - y1 < 5) return [];
   return [x1, y1, x2, y2];
+}
+
+function pageImageBbox(value) {
+  const box = normalizedCellBbox(value);
+  return box.length ? box : [0, 0, 1000, 1000];
+}
+
+function primaryChangeCellBbox(value, pageBoxValue) {
+  const box = normalizedCellBbox(value);
+  if (!box.length) return [];
+  const pageBox = pageImageBbox(pageBoxValue);
+  const [x1, y1, x2, y2] = box;
+  const [pageX1, pageY1, pageX2, pageY2] = pageBox;
+  const pageWidth = pageX2 - pageX1;
+  if (x1 < pageX1 || y1 < pageY1 || x2 > pageX2 || y2 > pageY2) return [];
+  if (x2 > pageX1 + pageWidth * PRIMARY_CHANGE_CELL_MAX_X_RATIO) return [];
+  if (x2 - x1 > pageWidth * PRIMARY_CHANGE_CELL_MAX_WIDTH_RATIO) return [];
+  return box;
 }
 
 function changeSourceZone(value) {
@@ -164,6 +188,7 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
     raw?.t ?? raw?.schedule_type ?? raw?.plan_type ?? raw?.timetable_type,
     planCode
   );
+  const pageBox = pageImageBbox(raw?.q ?? raw?.page_bbox ?? raw?.sheet_bbox ?? raw?.document_bbox);
   const pageReasons = [];
   if (!page) pageReasons.push('无法判断表号范围或页面类型');
   if (requestedId && inferredId && requestedId !== inferredId) pageReasons.push('检修中心与表号范围不一致');
@@ -190,16 +215,21 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
       ?? source.modification_in_target_cell
       ?? source.change_inside_target_cell
     );
-    const changeCellBbox = changeInPrimaryCell
+    const reportedChangeCellBbox = changeInPrimaryCell
       ? normalizedCellBbox(source.change_cell_bbox ?? source.target_cell_bbox ?? source.bbox)
       : [];
-    const trustedModification = claimsModification && sourceZone === 'main' && changeInPrimaryCell;
+    const changeCellBbox = primaryChangeCellBbox(reportedChangeCellBbox, pageBox);
+    const changedCandidate = reportedChanged || (reportedDifferent ? reportedEffective : '');
+    const changeValueHasSafeLocation = !changedCandidate || changeCellBbox.length > 0;
+    const trustedModification = claimsModification && sourceZone === 'main' && changeInPrimaryCell && changeValueHasSafeLocation;
+    const rejectedByGeometry = claimsModification && sourceZone === 'main' && changeInPrimaryCell &&
+      Boolean(changedCandidate) && !changeCellBbox.length;
     const explicitlyOutsideTarget = claimsModification && sourceZone === 'other' && !changeInPrimaryCell;
     const ignoredChanged = !trustedModification
-      ? (reportedChanged || (reportedDifferent ? reportedEffective : ''))
+      ? changedCandidate
       : '';
     const changed = trustedModification
-      ? (reportedChanged || (reportedDifferent ? reportedEffective : ''))
+      ? changedCandidate
       : '';
     const effective = trustedModification
       ? (reportedEffective || changed || original)
@@ -212,7 +242,11 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
     const reasons = Array.isArray(source.review_reasons) ? source.review_reasons.map(String) : [];
     const noteParts = [String(source.note ?? '').trim()].filter(Boolean);
     if (claimsModification && !trustedModification) {
-      if (explicitlyOutsideTarget) {
+      if (rejectedByGeometry) {
+        reasons.push(ignoredChanged
+          ? `疑似变更车号${ignoredChanged}的坐标缺失或超出左侧正式栏安全边界，已保留正式车号`
+          : '划改坐标缺失或超出左侧正式栏安全边界，已保留正式车号');
+      } else if (explicitlyOutsideTarget) {
         noteParts.push(ignoredChanged
           ? `同行其他栏位的疑似车号${ignoredChanged}已忽略`
           : '同行其他栏位的划改已忽略');
@@ -276,6 +310,7 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
     date: dateValue(raw?.d ?? raw?.date ?? raw?.service_date ?? raw?.document_date),
     plan_code: planCode,
     schedule_type: scheduleType,
+    page_bbox: pageBox,
     rows: normalizedRows,
     needs_review: pageReasons.length > 0,
     review_reasons: pageReasons
@@ -285,16 +320,20 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
 export function normalizeVehicleMapResponse(parsed, expectedImageCount = 3) {
   const imageCount = Math.max(1, Math.min(3, Number(expectedImageCount) || 3));
   const sourcePages = rawPages(parsed);
-  const byImage = new Map();
-  sourcePages.forEach((page, index) => {
-    const normalized = normalizePage(page, index + 1, imageCount);
-    if (!byImage.has(normalized.image_index)) byImage.set(normalized.image_index, normalized);
-  });
-
-  const pages = Array.from({ length: imageCount }, (_, index) => index + 1).map(imageIndex => byImage.get(imageIndex) || {
-    image_index: imageIndex, page_type: '', maintenance_center: '', date: '', rows: [],
-    needs_review: true, review_reasons: ['模型未返回这张照片']
-  });
+  const pages = sourcePages.map((page, index) => normalizePage(
+    page,
+    imageCount === 1 ? 1 : Math.min(index + 1, imageCount),
+    imageCount
+  ));
+  for (let imageIndex = 1; imageIndex <= imageCount; imageIndex += 1) {
+    if (pages.some(page => page.image_index === imageIndex)) continue;
+    pages.push({
+      image_index: imageIndex, page_type: '', maintenance_center: '', date: '', rows: [],
+      page_bbox: [0, 0, 1000, 1000], needs_review: true, review_reasons: ['模型未返回这张照片']
+    });
+  }
+  pages.sort((a, b) => a.image_index - b.image_index ||
+    VEHICLE_MAP_PAGES.findIndex(page => page.id === a.page_type) - VEHICLE_MAP_PAGES.findIndex(page => page.id === b.page_type));
   const seenPageTypes = new Map();
   for (const page of pages) {
     if (!page.page_type) continue;
@@ -353,7 +392,7 @@ export function normalizeVehicleMapResponse(parsed, expectedImageCount = 3) {
 export function buildVehicleMapPrompt(expectedImageCount = 3) {
   const imageCount = Math.max(1, Math.min(3, Number(expectedImageCount) || 3));
   const receiptRule = imageCount === 1
-    ? '本次只收到1张照片，用于新建或更新该照片所属的一个表号范围。'
+    ? '本次只收到1张照片。它可能只拍到一张运行计划表，也可能在同一画面中同时拍到古城、四惠、土桥三张彼此独立的完整运行计划表。必须先数清独立表格外框：一张表返回一个page；若画面中有三张表则返回三个page，三个page的x都为1且i各不相同。'
     : imageCount === 3
       ? '本次收到3张照片，顺序不固定，用于完整建立当天三个表号范围。'
       : `本次收到${imageCount}张照片，顺序不固定，用于新建或同时更新这些照片所属的表号范围。`;
@@ -361,9 +400,9 @@ export function buildVehicleMapPrompt(expectedImageCount = 3) {
     ? '运行日期在右上角，必须据实识别并统一输出YYYY-MM-DD。'
     : `运行日期在右上角，统一输出YYYY-MM-DD。所选${imageCount}张图应为同一天，但不得擅自改成一致。`;
   const finalCheck = imageCount === 1
-    ? '输出前检查收到的1张图已返回、图片序号为1、表号范围正确。'
+    ? '输出前检查收到的1张图已返回、所有page的图片序号均为1；若画面含三张独立表格，必须确认三个表号范围均已返回且没有把三张表误当成一张表内的三组竖列。'
     : `输出前检查收到的${imageCount}张图都已返回、图片序号不重复、表号范围正确。`;
-  return `你是北京地铁1号线“列车每日运行计划”数据提取助手。${receiptRule}只读取每张照片左侧的正式表号、正式车号、正式变更车号，以及右上角运行日期和页脚检修中心。
+  return `你是北京地铁1号线“列车每日运行计划”数据提取助手。${receiptRule}只读取每张独立表格左侧的正式表号、正式车号、正式变更车号，以及该表右上角运行日期和页脚检修中心。
 
 三种页面及合法表号：
 - gucheng：页脚含“古城检修”，表号01至28。
@@ -372,8 +411,14 @@ export function buildVehicleMapPrompt(expectedImageCount = 3) {
 
 页面身份首先按左侧表号范围判断，图片顺序不能作为依据。左下角检修中心文字仅作为辅助校验：它有时可能为空、未填写、被裁掉或看不清；这种情况下仍须根据表号范围正常判断页面，不能因此拒绝识别。只有页脚文字与表号范围明确冲突时才降低置信度。${dateRule}
 
+独立表格定位：
+- 每个page必须用q返回该张独立运行计划表在所属完整照片中的外框[x1,y1,x2,y2]，坐标按完整照片宽高归一化到0至1000。q应覆盖该表从标题、全部栏位到页脚检修中心的完整纸面或表格区域，不能只框左侧目标栏。
+- 同一照片包含三张表时，先按三个互不重叠的q分别识别，再在每个q内部独立寻找最左侧第一组正式栏。三个page都令x=1，不得把第二、第三张表当成第一张表的预备区、周检栏或远处竖列。
+- 单张照片只有一张表时也返回q；无法精确定位外框时可用[0,0,1000,1000]。同一照片中明显存在多张表却无法可靠分清外框时，不得跨表拼接数字，应分别返回能确认的page并降低置信度。
+
 目标数据区必须按竖向表格边界定位，而不是按整条横行联想：
 - 目标区仅为图片最左侧第一组“表号｜车号｜变更车号”。正式“变更车号”表头下方有时会被细竖线分成多个连续填写小格，这些小格仍属于同一个正式变更车号栏；目标区右边界必须取该表头覆盖范围的最外侧右框线，而不是第一个填写小格的右框线。
+- “连续填写小格”只指同一个正式“变更车号”表头正下方、彼此直接相邻且中间没有出现新表头或分区标题的小格。遇到“预备”、第二个“车号/变更车号”表头、周检车、段备、月修或任何新分区时必须立即停止，不能因为远处数字更清楚就继续向右寻找。
 - 页面中部从“预备”开始的第二组“车号｜变更车号”，以及右侧周检车、段备、月修、车组数、其他说明等区域，全部属于非目标区。
 - 同一横行右侧出现划线、手写数字或重写，不代表左侧正式表号发生变更；不得把横向相邻但位于其他列的数字归给正式表号。
 - 先沿最左侧“表号”列找到正式表号，再只读取该行目标区内紧邻的正式车号格和正式变更车号栏。不得越过正式变更车号栏的最外侧右框线，也不得借用其他横行、预备区或远处竖列的数字补齐车号。车号为000至999，必须保留前导零。
@@ -392,7 +437,7 @@ export function buildVehicleMapPrompt(expectedImageCount = 3) {
 - 第一步先检查每一行正式变更车号格是否存在任何非印刷笔迹，并同时检查正式车号格是否存在划线、斜线、叉号、涂抹或重写痕迹。
 - 第二步才判断这些笔迹能否组成明确的新车号。不得因为手写数字被斜线穿过、与表格线重叠或暂时读不清就判为无修改。
 - 只要能确认笔迹位于正式车号格或左侧第一组正式变更车号栏（包括该表头覆盖的任一连续填写小格），即使读不清新车号，也必须报告该行存在修改证据并交给人工确认：无法确认最终数字时令c为空、e=o、m=true、a=true、s=main、g=true；若连o也读不清则e也留空。
-- 对所有g=true的行，还必须用b返回包含最终手写值的目标填写小格边界，格式为[x1,y1,x2,y2]，坐标按该张完整照片宽高归一化到0至1000；多次修改时优先只包住最右侧最终值所在小格。边界只能位于正式车号格或正式“变更车号”表头覆盖范围内，不能越过其最外侧右框线，也不能包含同行预备、第二组车号、周检或备注栏。若无法可靠定位则b返回空数组[]。
+- 对所有g=true的行，还必须用b返回包含最终手写值的目标填写小格边界，格式为[x1,y1,x2,y2]，坐标按该张完整照片宽高归一化到0至1000；多次修改时优先只包住最右侧最终值所在小格。边界只能位于正式车号格或正式“变更车号”表头覆盖范围内，不能越过其最外侧右框线，也不能包含同行预备、第二组车号、周检或备注栏。作为额外安全限制，b必须完整位于其所属独立表格q的左侧52%以内且不能横跨该表的多个大栏位；后端会拒绝坐标缺失、越出q左侧正式区域或异常宽的变更值。若无法可靠定位则b返回空数组[]，同时c必须留空并令a=true，不能用同表远处竖列或合照中另一张表的数字代替。
 - 只有正式车号格和正式变更车号格都确认没有非印刷笔迹时，才允许m=false、s=none、g=false。
 
 目标区之外的划改必须忽略。尤其不得把“预备”之后第二组车号或变更车号格内的数字用于左侧正式表号。o保存能确认的正式印刷/原车号，c仅保存上述两种目标区可确认的最终新车号，e保存最终有效车号。m表示正式目标区存在划改、重写或非印刷笔迹证据，不要求新车号已经读清。s表示变更证据位置：main=目标区内，other=仅在预备/周检/备注等非目标区，none=没有变更，uncertain=无法确认位置。g在变更证据明确位于正式车号格或左侧第一组正式变更车号栏的表头覆盖范围内时为true。若s不是main或g不是true，必须令c为空、e=o、m=false；禁止猜测看不清的数字。
@@ -400,10 +445,10 @@ export function buildVehicleMapPrompt(expectedImageCount = 3) {
 标题与运行图类型：逐张读取表格顶部“列车运行计划单”后的标题代号。p保存完整代号，例如SX2608、PR2607、SGJR2606。t只允许weekend、weekday或空字符串：SX明确对应weekend，PR明确对应weekday；SGJR本身是中性代号，若该页没有其他明确证据则t留空，不得仅因SGJR猜测类型。
 
 只返回紧凑JSON，不要Markdown、解释或额外字段：
-{"pages":[{"x":1,"i":"gucheng","d":"2026-08-05","p":"PR2607","t":"weekday","r":[[1,"059","","059",false,false,0.98,"none",false,[]]]}]}
-x=图片序号（按收到顺序从1开始），i=页面身份，d=日期，p=标题代号，t=运行图类型，r中每行依次为[表号,原车号,变更车号,最终车号,正式目标区存在有效变更,最终值不确定,置信度,变更证据位置,变更是否位于正式目标格,目标单元格边界b]。
+{"pages":[{"x":1,"i":"gucheng","q":[0,0,1000,1000],"d":"2026-08-05","p":"PR2607","t":"weekday","r":[[1,"059","","059",false,false,0.98,"none",false,[]]]}]}
+x=图片序号（按收到顺序从1开始），i=页面身份，q=该独立表格在完整照片中的归一化外框，d=日期，p=标题代号，t=运行图类型，r中每行依次为[表号,原车号,变更车号,最终车号,正式目标区存在有效变更,最终值不确定,置信度,变更证据位置,变更是否位于正式目标格,目标单元格边界b]。
 b为目标单元格归一化边界[x1,y1,x2,y2]；无目标区笔迹或无法定位时为[]。
-每张图只返回其合法范围内的全部表号，每个表号恰好一次；空白也必须返回空字符串。输出前按表号逐行复查正式车号格和正式变更车号格，确保任何非印刷笔迹都已用m、a、s、g如实上报，不能静默遗漏。${finalCheck}`;
+每个page只返回其合法范围内的全部表号，每个表号恰好一次；空白也必须返回空字符串。输出前按表号逐行复查正式车号格和正式变更车号格；对每一个非空c再次核对b确实包住同一横行左侧正式栏内的该手写值，而不是远处竖列、相邻横行、跨栏大框或另一张表。无法通过此项核对时必须清空c、令e=o、a=true。确保任何非印刷笔迹都已用m、a、s、g如实上报，不能静默遗漏。${finalCheck}`;
 }
 
 export function vehicleHandwritingExamplesPrompt(examples = []) {

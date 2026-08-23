@@ -31,7 +31,7 @@ assert.deepEqual(complete.pages.map(page => page.rows.length), [30, 28, 31]);
 assert.equal(complete.pages[1].rows[0].effective_vehicle_number, '001');
 
 const changed = rows(1, 28, 1);
-changed[4] = [5, '018', '107', '107', true, false, 0.94, 'main', true];
+changed[4] = [5, '018', '107', '107', true, false, 0.94, 'main', true, [318, 244, 418, 278]];
 const changedResult = normalizeVehicleMapResponse({ pages: [
   { x: 1, i: 'gucheng', d: '2026-08-05', r: changed },
   { x: 2, i: 'sihui', d: '2026-08-05', r: rows(31, 61, 101) },
@@ -46,7 +46,7 @@ assert.equal(changedRow.needs_review, true);
 // 左侧第一组正式“变更车号”栏本身就是有效字段；原印刷车号无需同时被划掉。
 const formalChangeCellWithoutStrike = normalizeVehicleMapResponse({ pages: [
   { x: 1, i: 'tuqiao', d: '2026-08-22', r: [
-    [76, '033', '103', '103', true, false, 0.96, 'main', true]
+    [76, '033', '103', '103', true, false, 0.96, 'main', true, [318, 244, 418, 278]]
   ] }
 ] }, 1);
 const table76 = formalChangeCellWithoutStrike.pages[0].rows.find(row => row.table_no === 76);
@@ -191,6 +191,9 @@ assert.match(buildVehicleMapPrompt(3), /收到的3张图都已返回/);
 assert.match(buildVehicleMapPrompt(3), /不得把横向相邻但位于其他列的数字归给正式表号/);
 assert.match(buildVehicleMapPrompt(3), /正式“变更车号”表头下方有时会被细竖线分成多个连续填写小格/);
 assert.match(buildVehicleMapPrompt(3), /不得越过正式变更车号栏的最外侧右框线/);
+assert.match(buildVehicleMapPrompt(3), /遇到“预备”.*必须立即停止/);
+assert.match(buildVehicleMapPrompt(3), /所属独立表格q的左侧52%以内/);
+assert.match(buildVehicleMapPrompt(3), /后端会拒绝坐标缺失、越出q左侧正式区域或异常宽的变更值/);
 assert.match(buildVehicleMapPrompt(3), /变更证据位置/);
 assert.match(buildVehicleMapPrompt(3), /即使正式印刷车号没有被划掉，也以该变更车号为最终车号/);
 assert.match(buildVehicleMapPrompt(3), /两种情况都独立构成正式变更，不要求同时出现/);
@@ -231,6 +234,99 @@ assert.equal(table07.changed_vehicle_number, '054');
 assert.equal(table07.effective_vehicle_number, '054');
 assert.equal(table07.vehicle_modified, true);
 assert.deepEqual(table07.change_cell_bbox, [392, 314, 458, 348]);
+
+const remoteColumnChange = normalizeVehicleMapResponse({ pages: [
+  {
+    x: 1,
+    i: 'gucheng',
+    d: '2026-08-24',
+    r: [[7, '063', '054', '054', true, false, 0.94, 'main', true, [688, 314, 758, 348]]]
+  }
+] }, 1);
+const remoteTable07 = remoteColumnChange.pages[0].rows.find(row => row.table_no === 7);
+assert.equal(remoteTable07.original_vehicle_number, '063');
+assert.equal(remoteTable07.changed_vehicle_number, '');
+assert.equal(remoteTable07.effective_vehicle_number, '063');
+assert.equal(remoteTable07.vehicle_modified, false);
+assert.equal(remoteTable07.ignored_changed_vehicle_number, '054');
+assert.deepEqual(remoteTable07.change_cell_bbox, []);
+assert.ok(remoteTable07.review_reasons.some(reason => /坐标缺失或超出左侧正式栏安全边界/.test(reason)));
+
+const missingChangeBbox = normalizeVehicleMapResponse({ pages: [
+  {
+    x: 1,
+    i: 'gucheng',
+    d: '2026-08-24',
+    r: [[7, '063', '054', '054', true, false, 0.94, 'main', true, []]]
+  }
+] }, 1);
+const missingBboxTable07 = missingChangeBbox.pages[0].rows.find(row => row.table_no === 7);
+assert.equal(missingBboxTable07.changed_vehicle_number, '');
+assert.equal(missingBboxTable07.effective_vehicle_number, '063');
+assert.equal(missingBboxTable07.vehicle_modified, false);
+assert.ok(missingBboxTable07.needs_review);
+
+const crossColumnBbox = normalizeVehicleMapResponse({ pages: [
+  {
+    x: 1,
+    i: 'gucheng',
+    d: '2026-08-24',
+    r: [[7, '063', '054', '054', true, false, 0.94, 'main', true, [278, 314, 510, 348]]]
+  }
+] }, 1);
+const crossColumnTable07 = crossColumnBbox.pages[0].rows.find(row => row.table_no === 7);
+assert.equal(crossColumnTable07.changed_vehicle_number, '054');
+assert.equal(crossColumnTable07.effective_vehicle_number, '054');
+
+const overlyWideBbox = normalizeVehicleMapResponse({ pages: [
+  {
+    x: 1,
+    i: 'gucheng',
+    d: '2026-08-24',
+    r: [[7, '063', '054', '054', true, false, 0.94, 'main', true, [260, 314, 510, 348]]]
+  }
+] }, 1);
+const overlyWideTable07 = overlyWideBbox.pages[0].rows.find(row => row.table_no === 7);
+assert.equal(overlyWideTable07.changed_vehicle_number, '');
+assert.equal(overlyWideTable07.effective_vehicle_number, '063');
+assert.ok(overlyWideTable07.needs_review);
+
+const compositePhoto = normalizeVehicleMapResponse({ pages: [
+  {
+    x: 1, i: 'gucheng', q: [0, 0, 320, 1000], d: '2026-08-24',
+    r: [[7, '063', '054', '054', true, false, 0.94, 'main', true, [92, 314, 148, 348]]]
+  },
+  {
+    x: 1, i: 'sihui', q: [340, 0, 660, 1000], d: '2026-08-24',
+    r: [[31, '103', '088', '088', true, false, 0.93, 'main', true, [418, 314, 472, 348]]]
+  },
+  {
+    x: 1, i: 'tuqiao', q: [680, 0, 1000, 1000], d: '2026-08-24',
+    r: [[71, '048', '', '048', false, false, 0.98, 'none', false, []]]
+  }
+] }, 1);
+assert.equal(compositePhoto.pages.length, 3);
+assert.deepEqual(compositePhoto.pages.map(page => page.image_index), [1, 1, 1]);
+assert.deepEqual(compositePhoto.pages.map(page => page.page_type), ['gucheng', 'sihui', 'tuqiao']);
+assert.equal(compositePhoto.pages[0].rows.find(row => row.table_no === 7).effective_vehicle_number, '054');
+assert.equal(compositePhoto.pages[1].rows.find(row => row.table_no === 31).effective_vehicle_number, '088');
+assert.deepEqual(compositePhoto.pages[1].page_bbox, [340, 0, 660, 1000]);
+
+const compositeRemoteColumn = normalizeVehicleMapResponse({ pages: [
+  {
+    x: 1, i: 'sihui', q: [340, 0, 660, 1000], d: '2026-08-24',
+    r: [[31, '103', '088', '088', true, false, 0.93, 'main', true, [570, 314, 628, 348]]]
+  }
+] }, 1);
+const compositeRemoteRow = compositeRemoteColumn.pages[0].rows.find(row => row.table_no === 31);
+assert.equal(compositeRemoteRow.changed_vehicle_number, '');
+assert.equal(compositeRemoteRow.effective_vehicle_number, '103');
+assert.ok(compositeRemoteRow.needs_review);
+
+assert.match(buildVehicleMapPrompt(1), /同一画面中同时拍到古城、四惠、土桥三张/);
+assert.match(buildVehicleMapPrompt(1), /若画面中有三张表则返回三个page/);
+assert.match(buildVehicleMapPrompt(1), /每个page必须用q返回/);
+assert.match(buildVehicleMapPrompt(1), /三个page都令x=1/);
 
 const handwritingPrompt = vehicleHandwritingExamplesPrompt([
   { confirmed_value: '058', original_value: '105', model_value: '052' }
