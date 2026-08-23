@@ -1,4 +1,8 @@
-import { buildVehicleMapPrompt, parseVehicleMapModelText } from '../../vehicle-map-core.js';
+import {
+  buildVehicleMapPrompt,
+  parseVehicleMapModelText,
+  vehicleHandwritingExamplesPrompt
+} from '../../vehicle-map-core.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -161,6 +165,15 @@ async function recognizeVehicleMap(request, env, cors) {
   for (const image of body.images) {
     if (typeof image !== "string" || !/^data:image\/(jpeg|png|webp);base64,/.test(image)) return json({error:"图片格式不受支持。"},400,cors);
   }
+  const handwritingExamples=[];
+  for(const example of (Array.isArray(body.handwriting_examples)?body.handwriting_examples.slice(0,4):[])){
+    const image=example?.image;
+    if(typeof image!=="string"||!/^data:image\/(jpeg|png|webp);base64,/.test(image))return json({error:"笔迹样本图片格式不受支持。"},400,cors);
+    if(image.length>240000)return json({error:"笔迹样本图片过大。"},413,cors);
+    const confirmed=String(example?.confirmed_value??"").trim().padStart(3,"0");
+    if(!/^\d{3}$/.test(confirmed))return json({error:"笔迹样本标注格式错误。"},400,cors);
+    handwritingExamples.push({image,confirmed_value:confirmed,original_value:String(example?.original_value??"").trim(),model_value:String(example?.model_value??"").trim()});
+  }
 
   const deviceLimit = num(env.DEVICE_DAILY_LIMIT,30);
   const globalLimit = num(env.GLOBAL_DAILY_LIMIT,50);
@@ -172,6 +185,15 @@ async function recognizeVehicleMap(request, env, cors) {
   const controller = new AbortController();
   const timeout = setTimeout(()=>controller.abort("model-timeout"),timeoutMs);
   const content = [{type:"text",text:buildVehicleMapPrompt(body.images.length)}];
+  const examplePrompt=vehicleHandwritingExamplesPrompt(handwritingExamples);
+  if(examplePrompt){
+    content.push({type:"text",text:examplePrompt});
+    handwritingExamples.forEach((example,index)=>{
+      content.push({type:"text",text:`人工确认笔迹示例${index+1}：${example.confirmed_value}`});
+      content.push({type:"image_url",image_url:{url:example.image,detail:"high"}});
+    });
+    content.push({type:"text",text:"以上仅为笔迹参考。下面才是本次需要逐张识别的完整运行计划照片，图片序号从1重新计算。"});
+  }
   for (const image of body.images) content.push({type:"image_url",image_url:{url:image,detail:"high"}});
   let upstream;
   try {

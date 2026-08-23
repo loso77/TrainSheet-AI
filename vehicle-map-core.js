@@ -22,6 +22,20 @@ function vehicleNumber(value) {
   return raw.padStart(3, '0');
 }
 
+function normalizedCellBbox(value) {
+  const source = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object'
+      ? [value.x1 ?? value.left, value.y1 ?? value.top, value.x2 ?? value.right, value.y2 ?? value.bottom]
+      : [];
+  if (source.length !== 4) return [];
+  const box = source.map(Number);
+  if (box.some(number => !Number.isFinite(number))) return [];
+  const [x1, y1, x2, y2] = box.map(number => Math.max(0, Math.min(1000, Math.round(number))));
+  if (x2 - x1 < 5 || y2 - y1 < 5) return [];
+  return [x1, y1, x2, y2];
+}
+
 function changeSourceZone(value) {
   const text = String(value ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
   const noneValues = new Set(['', 'none', 'nochange', '无', '未变更']);
@@ -98,7 +112,12 @@ function compactRow(row) {
     if (row.length >= 9) {
       compact.change_source_zone = row[7];
       compact.change_in_primary_vehicle_cell = asBoolean(row[8]);
-      compact.note = row[9];
+      if (Array.isArray(row[9]) || (row[9] && typeof row[9] === 'object')) {
+        compact.change_cell_bbox = row[9];
+        compact.note = row[10];
+      } else {
+        compact.note = row[9];
+      }
     } else {
       // 兼容旧模型曾在第8项返回备注的格式。旧格式没有单元格归属证据。
       compact.note = row[7];
@@ -113,6 +132,7 @@ function compactRow(row) {
       ambiguity: asBoolean(row.a), confidence: row.p,
       change_source_zone: row.s,
       change_in_primary_vehicle_cell: asBoolean(row.g),
+      change_cell_bbox: row.b,
       note: row.note
     };
   }
@@ -170,6 +190,9 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
       ?? source.modification_in_target_cell
       ?? source.change_inside_target_cell
     );
+    const changeCellBbox = changeInPrimaryCell
+      ? normalizedCellBbox(source.change_cell_bbox ?? source.target_cell_bbox ?? source.bbox)
+      : [];
     const trustedModification = claimsModification && sourceZone === 'main' && changeInPrimaryCell;
     const explicitlyOutsideTarget = claimsModification && sourceZone === 'other' && !changeInPrimaryCell;
     const ignoredChanged = !trustedModification
@@ -214,6 +237,7 @@ function normalizePage(raw, fallbackImageIndex, imageCount = 3) {
       vehicle_modified: modified,
       change_source_zone: sourceZone,
       change_in_primary_vehicle_cell: changeInPrimaryCell,
+      change_cell_bbox: changeCellBbox,
       ignored_changed_vehicle_number: ignoredChanged,
       ambiguity: ambiguous,
       confidence: score,
@@ -362,6 +386,7 @@ export function buildVehicleMapPrompt(expectedImageCount = 3) {
 - 第一步先检查每一行正式变更车号格是否存在任何非印刷笔迹，并同时检查正式车号格是否存在划线、斜线、叉号、涂抹或重写痕迹。
 - 第二步才判断这些笔迹能否组成明确的新车号。不得因为手写数字被斜线穿过、与表格线重叠或暂时读不清就判为无修改。
 - 只要能确认笔迹位于正式车号格或左侧第一个正式变更车号格，即使读不清新车号，也必须报告该行存在修改证据并交给人工确认：无法确认最终数字时令c为空、e=o、m=true、a=true、s=main、g=true；若连o也读不清则e也留空。
+- 对所有g=true的行，还必须用b返回包含手写内容的目标单元格边界，格式为[x1,y1,x2,y2]，坐标按该张完整照片宽高归一化到0至1000；边界只包住正式车号格或第一个正式“变更车号”格，不能包含同行预备、周检或备注栏。若无法可靠定位则b返回空数组[]。
 - 只有正式车号格和正式变更车号格都确认没有非印刷笔迹时，才允许m=false、s=none、g=false。
 
 目标区之外的划改必须忽略。尤其不得把“预备”之后第二组车号或变更车号格内的数字用于左侧正式表号。o保存能确认的正式印刷/原车号，c仅保存上述两种目标区可确认的最终新车号，e保存最终有效车号。m表示正式目标区存在划改、重写或非印刷笔迹证据，不要求新车号已经读清。s表示变更证据位置：main=目标区内，other=仅在预备/周检/备注等非目标区，none=没有变更，uncertain=无法确认位置。g在变更证据明确位于正式车号格或左侧第一个正式“变更车号”格时为true。若s不是main或g不是true，必须令c为空、e=o、m=false；禁止猜测看不清的数字。
@@ -369,9 +394,27 @@ export function buildVehicleMapPrompt(expectedImageCount = 3) {
 标题与运行图类型：逐张读取表格顶部“列车运行计划单”后的标题代号。p保存完整代号，例如SX2608、PR2607、SGJR2606。t只允许weekend、weekday或空字符串：SX明确对应weekend，PR明确对应weekday；SGJR本身是中性代号，若该页没有其他明确证据则t留空，不得仅因SGJR猜测类型。
 
 只返回紧凑JSON，不要Markdown、解释或额外字段：
-{"pages":[{"x":1,"i":"gucheng","d":"2026-08-05","p":"PR2607","t":"weekday","r":[[1,"059","","059",false,false,0.98,"none",false]]}]}
-x=图片序号（按收到顺序从1开始），i=页面身份，d=日期，p=标题代号，t=运行图类型，r中每行依次为[表号,原车号,变更车号,最终车号,正式目标区存在有效变更,最终值不确定,置信度,变更证据位置,变更是否位于正式目标格]。
+{"pages":[{"x":1,"i":"gucheng","d":"2026-08-05","p":"PR2607","t":"weekday","r":[[1,"059","","059",false,false,0.98,"none",false,[]]]}]}
+x=图片序号（按收到顺序从1开始），i=页面身份，d=日期，p=标题代号，t=运行图类型，r中每行依次为[表号,原车号,变更车号,最终车号,正式目标区存在有效变更,最终值不确定,置信度,变更证据位置,变更是否位于正式目标格,目标单元格边界b]。
+b为目标单元格归一化边界[x1,y1,x2,y2]；无目标区笔迹或无法定位时为[]。
 每张图只返回其合法范围内的全部表号，每个表号恰好一次；空白也必须返回空字符串。输出前按表号逐行复查正式车号格和正式变更车号格，确保任何非印刷笔迹都已用m、a、s、g如实上报，不能静默遗漏。${finalCheck}`;
+}
+
+export function vehicleHandwritingExamplesPrompt(examples = []) {
+  const safe = (Array.isArray(examples) ? examples : []).slice(0, 4).map((example, index) => ({
+    index: index + 1,
+    confirmed: vehicleNumber(example?.confirmed_value),
+    original: vehicleNumber(example?.original_value),
+    model: vehicleNumber(example?.model_value)
+  })).filter(example => /^\d{3}$/.test(example.confirmed));
+  if (!safe.length) return '';
+  const lines = safe.map(example => {
+    const details = [];
+    if (example.original) details.push(`印刷原车号${example.original}`);
+    if (example.model && example.model !== example.confirmed) details.push(`模型曾误读为${example.model}`);
+    return `示例${example.index}的小图经人工确认是手写车号${example.confirmed}${details.length ? `（${details.join('，')}）` : ''}`;
+  });
+  return `以下小图是本设备历次人工校对后保留的正式变更车号格局部样本：\n${lines.join('\n')}\n这些示例只用于理解笔迹形状，不能据此推断本次任何表号的固定车号。先把闭合、回钩或交叉的收笔视为数字本身的一部分；例如人工已确认的手写8不能拆成“2加划线”。仍须以本次照片为准，不相似时不要套用。`;
 }
 
 export function parseVehicleMapModelText(text, expectedImageCount = 3) {

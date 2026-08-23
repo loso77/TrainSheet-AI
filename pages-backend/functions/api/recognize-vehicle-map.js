@@ -2,12 +2,33 @@ import {
   json, readJson, requireToken, rateLimit, usageStatus, consumeDaily,
   ip, num, publicError
 } from '../_lib/shared.js';
-import { buildVehicleMapPrompt, parseVehicleMapModelText } from '../../../vehicle-map-core.js';
+import {
+  buildVehicleMapPrompt,
+  parseVehicleMapModelText,
+  vehicleHandwritingExamplesPrompt
+} from '../../../vehicle-map-core.js';
 
 function validateImage(image) {
   if (typeof image !== 'string' || !/^data:image\/(jpeg|png|webp);base64,/.test(image)) {
     throw publicError('图片格式不受支持。', 400);
   }
+}
+
+function handwritingExamples(body) {
+  const source = Array.isArray(body?.handwriting_examples) ? body.handwriting_examples.slice(0, 4) : [];
+  return source.map(example => {
+    const image = example?.image;
+    validateImage(image);
+    if (image.length > 240000) throw publicError('笔迹样本图片过大。', 413);
+    const confirmed = String(example?.confirmed_value ?? '').trim().padStart(3, '0');
+    if (!/^\d{3}$/.test(confirmed)) throw publicError('笔迹样本标注格式错误。', 400);
+    return {
+      image,
+      confirmed_value: confirmed,
+      original_value: String(example?.original_value ?? '').trim(),
+      model_value: String(example?.model_value ?? '').trim()
+    };
+  });
 }
 
 function requestedProvider(env, requested) {
@@ -59,11 +80,25 @@ function providerConfig(env, provider) {
   };
 }
 
-async function callModel(env, provider, images, timeoutMs) {
+async function callModel(env, provider, images, examples, timeoutMs) {
   const config = providerConfig(env, provider);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort('model-timeout'), timeoutMs);
   const content = [{ type: 'text', text: buildVehicleMapPrompt(images.length) }];
+  const examplePrompt = vehicleHandwritingExamplesPrompt(examples);
+  if (examplePrompt) {
+    content.push({ type: 'text', text: examplePrompt });
+    examples.forEach((example, index) => {
+      content.push({ type: 'text', text: `人工确认笔迹示例${index + 1}：${example.confirmed_value}` });
+      content.push({
+        type: 'image_url',
+        image_url: config.provider === 'openai-compatible'
+          ? { url: example.image, detail: 'high' }
+          : { url: example.image }
+      });
+    });
+    content.push({ type: 'text', text: '以上仅为笔迹参考。下面才是本次需要逐张识别的完整运行计划照片，图片序号从1重新计算。' });
+  }
   images.forEach(image => content.push({
     type: 'image_url',
     image_url: config.provider === 'openai-compatible' ? { url: image, detail: 'high' } : { url: image }
@@ -120,6 +155,7 @@ export async function onRequestPost({ request, env }) {
     throw publicError('请一次提交1至3张运行计划照片。', 400);
   }
   body.images.forEach(validateImage);
+  const examples = handwritingExamples(body);
 
   const [ipOk, deviceOk] = await Promise.all([
     rateLimit(env.DB, 'vehicle-map-ip', ip(request), 3, 60),
@@ -136,7 +172,7 @@ export async function onRequestPost({ request, env }) {
   const provider = requestedProvider(env, body.provider || 'default');
   const timeoutMs = Math.max(30000, Math.min(90000, num(env.VEHICLE_MAP_TIMEOUT_MS, 55000)));
   const started = Date.now();
-  const modelResult = await callModel(env, provider, body.images, timeoutMs);
+  const modelResult = await callModel(env, provider, body.images, examples, timeoutMs);
   const normalized = parseVehicleMapModelText(modelResult.text, body.images.length);
   const usage = await consumeDaily(env.DB, principal.sub, deviceLimit, globalLimit);
 

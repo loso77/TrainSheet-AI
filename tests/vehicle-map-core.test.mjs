@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import { buildVehicleMapPrompt, normalizeVehicleMapResponse, parseVehicleMapModelText } from '../vehicle-map-core.js';
+import {
+  buildVehicleMapPrompt,
+  normalizeVehicleMapResponse,
+  parseVehicleMapModelText,
+  vehicleHandwritingExamplesPrompt
+} from '../vehicle-map-core.js';
 
 const rows = (start, end, vehicleStart = 1) => Array.from({ length: end - start + 1 }, (_, index) => [
   start + index,
@@ -192,5 +197,24 @@ assert.match(buildVehicleMapPrompt(3), /不得因为手写数字被斜线穿过�
 assert.match(buildVehicleMapPrompt(3), /无法确认最终数字时.*m=true.*a=true.*s=main.*g=true/);
 assert.match(buildVehicleMapPrompt(3), /p保存完整代号，例如SX2608、PR2607、SGJR2606/);
 assert.match(buildVehicleMapPrompt(3), /SGJR本身是中性代号/);
+assert.match(buildVehicleMapPrompt(1), /目标单元格边界/);
+
+const handwritingBbox = normalizeVehicleMapResponse({ pages: [
+  {
+    x: 1,
+    i: 'tuqiao',
+    d: '2026-08-23',
+    r: [[83, '105', '058', '058', true, false, 0.86, 'main', true, [318, 462, 446, 512]]]
+  }
+] }, 1);
+const handwritingRow = handwritingBbox.pages[0].rows.find(row => row.table_no === 83);
+assert.equal(handwritingRow.changed_vehicle_number, '058');
+assert.deepEqual(handwritingRow.change_cell_bbox, [318, 462, 446, 512]);
+
+const handwritingPrompt = vehicleHandwritingExamplesPrompt([
+  { confirmed_value: '058', original_value: '105', model_value: '052' }
+]);
+assert.match(handwritingPrompt, /058/);
+assert.match(handwritingPrompt, /不能.*拆成.*2.*划线/);
 
 console.log('vehicle-map-core tests passed');
